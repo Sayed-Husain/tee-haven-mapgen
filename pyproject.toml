@@ -1,0 +1,15 @@
+[project]
+name = "tee-haven-mapgen"
+version = "0.1.0"
+description = "AI-assisted Teeworlds map generation tool"
+requires-python = ">=3.11"
+dependencies = [
+    "twmap>=0.6.6",
+    "numpy",
+    "openai",
+    "python-dotenv",
+    "pillow",
+]
+
+[project.scripts]
+mapgen = "mapgen.cli:main"
