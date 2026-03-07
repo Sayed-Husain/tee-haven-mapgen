@@ -2,6 +2,22 @@
 
 AI-assisted Teeworlds Gores map generation tool. Segments Gores maps into gameplay sections using algorithmic path tracing.
 
+## Examples
+
+Each segment is a colored rectangle following the actual gameplay corridor. Yellow marks indicate checkpoint platforms.
+
+**Simpler** (18 segments)
+
+![Simpler segmentation](assets/Simpler_segments.png)
+
+**Encore** (29 segments)
+
+![Encore segmentation](assets/Encore_segments.png)
+
+**Bl0odDens5** (45 segments)
+
+![Bl0odDens5 segmentation](assets/Bl0odDens5_segments.png)
+
 ## How It Works
 
 The segmentation pipeline imitates a player walking through a Gores map from spawn to finish. As they travel, they pass flat platforms (checkpoints) where they can safely stand. Those checkpoints divide the map into gameplay sections.
@@ -111,7 +127,6 @@ src/mapgen/
   extract.py    - Load .map files, classify tiles, render ASCII
   pathfind.py   - BFS path tracing, checkpoint detection, Voronoi segmentation
   floors.py     - Horizontal floor detection (solid band dividers)
-  segment.py    - Hybrid LLM approach (experimental, not default)
   visualize.py  - PNG renderer with colored segment overlays
   cli.py        - CLI entry point
 ```
