@@ -11,7 +11,7 @@ by freeze, which is the defining visual and gameplay characteristic of
 real Gores maps. Freeze borders emerge naturally from the carving
 process — no post-hoc placement needed.
 
-Walker approach inspired by concepts from iMilchshake/gores-mapgen.
+Two-kernel approach developed for organic Gores corridor generation.
 """
 
 from __future__ import annotations
