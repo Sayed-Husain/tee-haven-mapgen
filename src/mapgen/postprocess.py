@@ -197,7 +197,7 @@ def fix_edge_bugs(grid: np.ndarray) -> np.ndarray:
     and skip the freeze entirely.  This is called an "edge bug" and
     skilled players routinely exploit it to bypass freeze corridors.
 
-    The fix (from iMilchshake's gores-mapgen): for every air tile that
+    The fix: for every air tile that
     is adjacent to a hookable SOLID tile AND has FREEZE on the opposite
     side, insert a 1-tile FREEZE buffer between the air and the solid.
 
