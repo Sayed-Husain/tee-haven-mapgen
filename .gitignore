@@ -11,6 +11,7 @@ uv.lock
 
 # Maps (binary files, downloaded by script)
 maps/samples/*.map
+maps/opengores-repo/
 maps/output/
 
 # Secrets

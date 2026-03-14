@@ -141,14 +141,25 @@ def detect_checkpoints(grid: np.ndarray, min_width: int = 3) -> list[Checkpoint]
 def _find_tiles_by_raw_id(path: str, tile_id: int) -> list[tuple[int, int]]:
     """Find all positions of a specific raw DDNet tile ID.
 
+    Searches all physics layers (game + front layer) since many maps
+    place spawns/entities on the front layer, not the game layer.
+
     Returns list of (x, y) tuples.
     """
     import twmap
     m = twmap.Map(path)
-    gl = m.game_layer()
-    ids = gl.tiles[:, :, 0]
-    ys, xs = np.where(ids == tile_id)
-    return list(zip(xs.astype(int), ys.astype(int)))
+
+    pg = m.physics_group()
+    for layer in pg.layers:
+        if not hasattr(layer, 'tiles'):
+            continue
+        ids = layer.tiles[:, :, 0]
+        ys, xs = np.where(ids == tile_id)
+        results = list(zip(xs.astype(int), ys.astype(int)))
+        if results:
+            return results
+
+    return []
 
 
 def _read_tele_channels(map_path: str) -> tuple[dict[tuple[int, int], int], dict[int, list[tuple[int, int]]]]:
