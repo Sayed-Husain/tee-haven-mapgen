@@ -103,18 +103,27 @@ def stitch_segments(
 
         prev_exit_range = _opening_x_range(bp.exit, x_offset)
 
-        # Place entities
+        # Place entities — fill the full opening width
         if i == 0:
             ex, ey = _entry_position(bp, x_offset, y_offset)
+            entry_x0 = x_offset + bp.entry.x
+            entry_w = bp.entry.width
             _enforce_entity_safety(full_grid, ex, ey, label="spawn")
+            # Spawn in center, start tiles across the full opening
             entities.append((ex, ey, SPAWN_ID))
-            entities.append((ex + 1, ey, START_ID))
+            for dx in range(entry_w):
+                tile_x = entry_x0 + dx
+                if tile_x != ex:  # don't overwrite spawn
+                    entities.append((tile_x, ey, START_ID))
 
         if i == len(segments) - 1:
             fx, fy = _exit_position(bp, x_offset, y_offset, seg_h)
+            exit_x0 = x_offset + bp.exit.x
+            exit_w = bp.exit.width
             _enforce_entity_safety(full_grid, fx, fy, label="finish")
-            entities.append((fx, fy, FINISH_ID))
-            entities.append((fx + 1, fy, FINISH_ID))
+            # Finish tiles across the full opening
+            for dx in range(exit_w):
+                entities.append((exit_x0 + dx, fy, FINISH_ID))
 
         y_offset += seg_h + BORDER_HEIGHT
 
@@ -191,6 +200,9 @@ def write_map(
                               vlayer.tileset_path, w, h,
                               color=vlayer.color)
 
+    # Add start/finish marker quads (rendered on top of everything)
+    _add_markers(m, entities)
+
     m.save(str(out))
     print(f"  Map saved: {out}")
     return out
@@ -224,6 +236,60 @@ def _add_visual_layer(
                 tiles[y, x, 1] = 0
 
     tile_layer.tiles = tiles
+
+
+def _add_markers(
+    m: twmap.Map,
+    entities: list[tuple[int, int, int]],
+) -> None:
+    """Add colored marker quads at spawn and finish positions.
+
+    Creates a foreground group with semi-transparent colored quads:
+    - Green glow at spawn/start area
+    - Red glow at finish area
+    """
+    spawn_pos = [(x, y) for x, y, tid in entities if tid == SPAWN_ID]
+    start_pos = [(x, y) for x, y, tid in entities if tid == START_ID]
+    finish_pos = [(x, y) for x, y, tid in entities if tid == FINISH_ID]
+
+    if not spawn_pos and not finish_pos:
+        return
+
+    marker_group = m.groups.new()
+    marker_layer = marker_group.layers.new_quads()
+
+    # Start marker — green overlay exactly matching start tiles
+    if spawn_pos:
+        all_start = spawn_pos + start_pos
+        min_x = min(x for x, y in all_start)
+        max_x = max(x for x, y in all_start) + 1  # +1 for tile width
+        sy = all_start[0][1]
+        cx = (min_x + max_x) / 2
+        tile_w = max_x - min_x
+
+        q = marker_layer.quads.new(cx, sy + 0.5, tile_w, 1)
+        q.colors = [
+            (50, 255, 50, 100),
+            (50, 255, 50, 100),
+            (50, 255, 50, 100),
+            (50, 255, 50, 100),
+        ]
+
+    # Finish marker — red overlay exactly matching finish tiles
+    if finish_pos:
+        min_x = min(x for x, y in finish_pos)
+        max_x = max(x for x, y in finish_pos) + 1
+        fy = finish_pos[0][1]
+        cx = (min_x + max_x) / 2
+        tile_w = max_x - min_x
+
+        q = marker_layer.quads.new(cx, fy + 0.5, tile_w, 1)
+        q.colors = [
+            (255, 50, 50, 100),
+            (255, 50, 50, 100),
+            (255, 50, 50, 100),
+            (255, 50, 50, 100),
+        ]
 
 
 def _add_background(
