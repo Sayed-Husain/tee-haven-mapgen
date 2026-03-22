@@ -181,7 +181,8 @@ def write_map(
     if visual_layers:
         for vlayer in visual_layers:
             _add_visual_layer(m, vlayer.indices, vlayer.flags,
-                              vlayer.tileset_path, w, h)
+                              vlayer.tileset_path, w, h,
+                              color=vlayer.color)
 
     m.save(str(out))
     print(f"  Map saved: {out}")
@@ -195,6 +196,7 @@ def _add_visual_layer(
     tileset_path: str,
     w: int,
     h: int,
+    color: tuple[int, int, int, int] = (255, 255, 255, 255),
 ) -> None:
     """Add a visual tile layer to the map using the given tileset."""
     img = m.images.new_from_file(tileset_path)
@@ -203,6 +205,7 @@ def _add_visual_layer(
     design_group = m.groups.new()
     tile_layer = design_group.layers.new_tiles(width=w, height=h)
     tile_layer.image = img_idx
+    tile_layer.color = color  # RGBA tint for shape-only tilesets
 
     tiles = tile_layer.tiles
     for y in range(h):

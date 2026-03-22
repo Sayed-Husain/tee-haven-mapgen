@@ -48,21 +48,21 @@ CLUSTER_TO_CONFIG: dict[str, dict] = {
     "high air zigzag traverse": {
         **DEFAULT_CONFIG,
         "inner_size": 7,
-        "outer_margin": 1,
+        "outer_margin": 2,  # bumped from 1 for visible freeze
         "momentum_prob": 0.5,  # more winding
         "size_range": (5, 8),
     },
     "open air freeze zigzag descent": {
         **DEFAULT_CONFIG,
         "inner_size": 7,
-        "outer_margin": 1,
+        "outer_margin": 2,  # bumped from 1 for visible freeze
         "momentum_prob": 0.55,
         "size_range": (5, 8),
     },
     "open air zigzag descent": {
         **DEFAULT_CONFIG,
         "inner_size": 7,
-        "outer_margin": 1,
+        "outer_margin": 2,  # bumped from 1 for visible freeze
         "momentum_prob": 0.5,
         "size_range": (5, 9),
     },
@@ -217,7 +217,7 @@ def get_walker_config(cluster_label: str, difficulty: str = "medium") -> WalkerC
     # Apply difficulty modifiers
     if difficulty == "easy":
         raw["inner_size"] = min(raw.get("inner_size", 6) + 1, 9)
-        raw["outer_margin"] = max(raw.get("outer_margin", 1) - 1, 0)
+        raw["outer_margin"] = max(raw.get("outer_margin", 1) - 1, 1)  # min 1 to always have freeze
         sr = raw.get("size_range", (4, 7))
         raw["size_range"] = (min(sr[0] + 1, sr[1]), sr[1] + 1)
     elif difficulty == "hard":
