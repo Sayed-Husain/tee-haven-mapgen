@@ -9,6 +9,9 @@ dependencies = [
     "openai",
     "python-dotenv",
     "pillow",
+    "langgraph",
+    "langchain-core",
+    "langchain-openai",
 ]
 
 [project.scripts]
