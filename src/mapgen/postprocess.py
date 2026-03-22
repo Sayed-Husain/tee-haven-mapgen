@@ -100,6 +100,93 @@ def roughen_terrain(
     return result
 
 
+# ── Widen narrow passages ────────────────────────────────────────
+
+def widen_narrow_passages(
+    grid: np.ndarray,
+    min_width: int = 3,
+) -> np.ndarray:
+    """Widen air passages narrower than min_width tiles.
+
+    The walker can create bottleneck points where the air corridor
+    pinches to 1-2 tiles — too narrow for the tee to physically pass
+    (the tee hitbox is ~2 tiles). This pass finds those bottlenecks
+    and widens them by converting adjacent freeze/solid to air.
+
+    For each air tile, we measure the minimum of horizontal and
+    vertical passage width. If either is below min_width, we expand
+    the corridor by converting neighbors to air.
+
+    Args:
+        grid: 2D tile grid (modified in-place).
+        min_width: Minimum passage width in tiles (default 3).
+
+    Returns:
+        The modified grid.
+    """
+    h, w = grid.shape
+    widened = 0
+
+    # Multiple passes since widening one spot might reveal new bottlenecks
+    for _pass in range(3):
+        tiles_to_clear = []
+
+        for y in range(2, h - 2):
+            for x in range(2, w - 2):
+                if grid[y, x] != AIR:
+                    continue
+
+                # Measure horizontal width at this point
+                hw = 1
+                for dx in range(1, min_width + 1):
+                    if x + dx < w - 1 and grid[y, x + dx] == AIR:
+                        hw += 1
+                    else:
+                        break
+                for dx in range(1, min_width + 1):
+                    if x - dx > 0 and grid[y, x - dx] == AIR:
+                        hw += 1
+                    else:
+                        break
+
+                # Measure vertical width at this point
+                vw = 1
+                for dy in range(1, min_width + 1):
+                    if y + dy < h - 1 and grid[y + dy, x] == AIR:
+                        vw += 1
+                    else:
+                        break
+                for dy in range(1, min_width + 1):
+                    if y - dy > 0 and grid[y - dy, x] == AIR:
+                        vw += 1
+                    else:
+                        break
+
+                # If too narrow, mark neighbors for clearing
+                if hw < min_width:
+                    for dx in range(-1, 2):
+                        gx = x + dx
+                        if 1 <= gx < w - 1 and grid[y, gx] != AIR:
+                            tiles_to_clear.append((y, gx))
+                if vw < min_width:
+                    for dy in range(-1, 2):
+                        gy = y + dy
+                        if 1 <= gy < h - 1 and grid[gy, x] != AIR:
+                            tiles_to_clear.append((gy, x))
+
+        if not tiles_to_clear:
+            break
+
+        for y, x in tiles_to_clear:
+            grid[y, x] = AIR
+            widened += 1
+
+    if widened > 0:
+        print(f"    Widened {widened} tiles in narrow passages")
+
+    return grid
+
+
 # ── Fix edge bugs ────────────────────────────────────────────────
 
 def fix_edge_bugs(grid: np.ndarray) -> np.ndarray:
