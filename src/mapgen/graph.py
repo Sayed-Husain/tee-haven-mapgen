@@ -56,9 +56,7 @@ class PipelineState(TypedDict, total=False):
     # Assembly + export
     assembled_grid: Any  # np.ndarray
     entities: list[tuple[int, int, int]]
-    visual_grid: Any  # np.ndarray (from automapper)
-    visual_flags: Any  # np.ndarray (from automapper)
-    tileset_path: Optional[str]
+    visual_layers: list  # list[VisualLayer] from automapper
     output_path: Optional[str]
 
     # Retry limits
@@ -465,33 +463,25 @@ def automap_node(state: PipelineState) -> dict:
     grid = state["assembled_grid"]
 
     try:
-        visual_indices, visual_flags, tileset_path = apply_theme(grid, theme)
-        print(f"  Automapper: applied '{theme}' theme")
-        return {
-            "visual_grid": visual_indices,
-            "visual_flags": visual_flags,
-            "tileset_path": tileset_path,
-        }
+        layers = apply_theme(grid, theme)
+        print(f"  Automapper: applied '{theme}' theme ({len(layers)} visual layers)")
+        return {"visual_layers": layers}
     except (FileNotFoundError, ValueError) as e:
         print(f"  Automapper: skipped ({e})")
-        return {}
+        return {"visual_layers": []}
 
 
 def export_node(state: PipelineState) -> dict:
     """Write the final .map file with game + visual layers."""
     output_path = state.get("output_path") or "maps/output/generated.map"
 
-    visual_grid = state.get("visual_grid")
-    visual_flags = state.get("visual_flags")
-    tileset_path = state.get("tileset_path")
+    visual_layers = state.get("visual_layers", [])
 
     path = write_map(
         state["assembled_grid"],
         state["entities"],
         output_path,
-        visual_grid=visual_grid,
-        visual_flags=visual_flags,
-        tileset_path=tileset_path,
+        visual_layers=visual_layers,
     )
     return {"output_path": str(path)}
 

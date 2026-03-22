@@ -134,9 +134,7 @@ def write_map(
     grid: np.ndarray,
     entities: list[tuple[int, int, int]],
     output_path: str,
-    visual_grid: Optional[np.ndarray] = None,
-    visual_flags: Optional[np.ndarray] = None,
-    tileset_path: Optional[str] = None,
+    visual_layers: Optional[list] = None,
 ) -> Path:
     """Write a numpy grid + entities to a DDNet .map file via twmap.
 
@@ -144,9 +142,7 @@ def write_map(
         grid: game layer tile grid (using simplified categories)
         entities: list of (x, y, tile_id) for spawn/start/finish
         output_path: where to save the .map file
-        visual_grid: optional visual tile indices (same dimensions as grid)
-        visual_flags: optional visual tile flags (XFLIP/YFLIP/ROTATE)
-        tileset_path: path to tileset .png image (required if visual_grid is set)
+        visual_layers: list of VisualLayer objects (from automap.py)
 
     Returns:
         Path to saved .map file.
@@ -181,9 +177,11 @@ def write_map(
 
     game_layer.tiles = tiles
 
-    # Add visual layer if provided
-    if visual_grid is not None and tileset_path is not None:
-        _add_visual_layer(m, visual_grid, visual_flags, tileset_path, w, h)
+    # Add visual layers
+    if visual_layers:
+        for vlayer in visual_layers:
+            _add_visual_layer(m, vlayer.indices, vlayer.flags,
+                              vlayer.tileset_path, w, h)
 
     m.save(str(out))
     print(f"  Map saved: {out}")
@@ -199,11 +197,9 @@ def _add_visual_layer(
     h: int,
 ) -> None:
     """Add a visual tile layer to the map using the given tileset."""
-    # Load tileset image into the map's image collection
     img = m.images.new_from_file(tileset_path)
-    img_idx = len(m.images) - 1  # index of the just-added image
+    img_idx = len(m.images) - 1
 
-    # Create a design group for visual tiles
     design_group = m.groups.new()
     tile_layer = design_group.layers.new_tiles(width=w, height=h)
     tile_layer.image = img_idx

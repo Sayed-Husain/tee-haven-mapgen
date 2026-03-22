@@ -34,9 +34,14 @@ DATA_DIR = Path(__file__).parent.parent.parent / "data"
 RULES_DIR = DATA_DIR / "automapper"
 TILESET_DIR = DATA_DIR / "tilesets"
 
-# Theme → (rules file, tileset image, config name)
-THEME_MAP = {
-    "grass": ("grass_main.rules", "grass_main.png", "Default"),
+# Theme → list of (rules file, tileset image, config name, tile_category)
+# Each entry creates one visual tile layer. SOLID layer uses the main
+# tileset, FREEZE layer uses the freeze tileset.
+THEME_LAYERS = {
+    "grass": [
+        ("grass_main.rules", "grass_main.png", "Default", SOLID),
+        ("basic_freeze.rules", "basic_freeze.png", "Freeze soft corners", FREEZE),
+    ],
 }
 
 
@@ -269,49 +274,61 @@ def _passes_random(seed: int, run: int, x: int, y: int, prob: float) -> bool:
 
 # ── Public API ────────────────────────────────────────────────────
 
+@dataclass
+class VisualLayer:
+    """One visual tile layer ready for export."""
+    indices: np.ndarray       # tile indices (h, w)
+    flags: np.ndarray         # tile flags (h, w)
+    tileset_path: str         # path to tileset .png
+
+
 def apply_theme(
     game_grid: np.ndarray,
     theme: str = "grass",
-) -> tuple[np.ndarray, np.ndarray, str]:
+) -> list[VisualLayer]:
     """Apply a visual theme to a game layer grid.
 
-    Converts game categories (SOLID/AIR/FREEZE/etc.) to a source grid
-    for the automapper (non-zero = solid = will get visual tiles),
-    then applies the theme's rules.
+    Creates one visual layer per tile category (solid, freeze, etc.).
+    Each layer uses its own tileset and automapper rules.
 
     Args:
         game_grid: 2D array with our tile categories (AIR, SOLID, etc.)
-        theme: theme name from THEME_MAP
+        theme: theme name from THEME_LAYERS
 
     Returns:
-        (visual_indices, visual_flags, tileset_path)
+        List of VisualLayer objects (one per tileset).
     """
-    if theme not in THEME_MAP:
-        raise ValueError(f"Unknown theme '{theme}'. Available: {list(THEME_MAP)}")
+    if theme not in THEME_LAYERS:
+        raise ValueError(f"Unknown theme '{theme}'. Available: {list(THEME_LAYERS)}")
 
-    rules_file, tileset_file, config_name = THEME_MAP[theme]
-    rules_path = RULES_DIR / rules_file
-    tileset_path = TILESET_DIR / tileset_file
+    layers = []
+    for rules_file, tileset_file, config_name, tile_cat in THEME_LAYERS[theme]:
+        rules_path = RULES_DIR / rules_file
+        tileset_path = TILESET_DIR / tileset_file
 
-    if not rules_path.exists():
-        raise FileNotFoundError(f"Rules file not found: {rules_path}")
-    if not tileset_path.exists():
-        raise FileNotFoundError(f"Tileset not found: {tileset_path}")
+        if not rules_path.exists() or not tileset_path.exists():
+            print(f"  Automapper: skipping {tileset_file} (files not found)")
+            continue
 
-    # Parse rules
-    configs = parse_rules_file(rules_path)
-    if config_name not in configs:
-        raise ValueError(f"Config '{config_name}' not found in {rules_path}. "
-                         f"Available: {list(configs)}")
+        configs = parse_rules_file(rules_path)
+        if config_name not in configs:
+            print(f"  Automapper: config '{config_name}' not found in {rules_file}")
+            continue
 
-    config = configs[config_name]
+        config = configs[config_name]
 
-    # Convert game grid to automapper source:
-    # SOLID → 1 (will be automapped)
-    # Everything else → 0 (empty/air)
-    source = np.zeros_like(game_grid, dtype=np.int32)
-    source[game_grid == SOLID] = 1
+        # Build source grid: target tile category → 1, everything else → 0
+        source = np.zeros_like(game_grid, dtype=np.int32)
+        source[game_grid == tile_cat] = 1
 
-    visual_indices, visual_flags = apply_rules(source, config)
+        indices, flags = apply_rules(source, config)
 
-    return visual_indices, visual_flags, str(tileset_path)
+        # Only add layer if it has any non-zero tiles
+        if np.any(indices > 0):
+            layers.append(VisualLayer(
+                indices=indices,
+                flags=flags,
+                tileset_path=str(tileset_path),
+            ))
+
+    return layers
