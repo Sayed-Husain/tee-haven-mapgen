@@ -24,6 +24,7 @@ from langgraph.graph import StateGraph, END
 
 from .assemble import stitch_segments, write_map, SPAWN_ID, FINISH_ID
 from .builder import _carve_opening
+from .cluster import load_pattern_library
 from .config_mapping import get_walker_config, get_segment_dimensions, DEFAULT_CONFIG
 from .extract import AIR, SOLID, FREEZE
 from .postprocess import widen_narrow_passages, fix_edge_bugs, remove_freeze_blobs
@@ -63,12 +64,144 @@ class PipelineState(TypedDict, total=False):
 
 # ── Node functions ───────────────────────────────────────────────
 
-def plan_node(state: PipelineState) -> dict:
-    """Initialize segments from the challenge sequence.
+def llm_plan_node(state: PipelineState) -> dict:
+    """LLM designs the challenge sequence, difficulty curve, and theme.
 
-    For now this uses a hardcoded or pre-set challenge sequence.
-    The LLM integration (step 4) will replace the sequence generation.
+    Loads the cluster vocabulary (20 challenge types from real maps),
+    sends it to the LLM with the user's difficulty/segment request,
+    and parses the structured JSON response.
+
+    If challenge_sequence is already set (hardcoded for testing),
+    this node is a no-op.
     """
+    # Skip if sequence already provided
+    if state.get("challenge_sequence"):
+        return {}
+
+    import json
+    import os
+    from openai import OpenAI
+    from dotenv import load_dotenv
+
+    load_dotenv()
+    client = OpenAI()
+
+    # Load cluster vocabulary
+    lib = load_pattern_library()
+    if lib is None:
+        # Fallback: use a default sequence
+        print("  WARNING: No pattern library found, using default sequence")
+        n = state["user_n_segments"]
+        return {
+            "challenge_sequence": ["Winding freeze corridor descent"] * n,
+            "difficulty_progression": [state["user_difficulty"]] * n,
+            "visual_theme": state.get("user_theme") or "grass",
+        }
+
+    cluster_labels = [c.label for c in lib.clusters if c.label]
+    cluster_info = "\n".join(
+        f"- \"{c.label}\" ({c.size} real segments): {c.description or 'no description'}"
+        for c in sorted(lib.clusters, key=lambda c: c.size, reverse=True)
+        if c.label
+    )
+
+    system_prompt = f"""You are a Gores map designer for DDNet/Teeworlds.
+
+You design the challenge sequence for procedurally generated Gores maps.
+Each segment uses one of these challenge types, learned from {len(lib.segments)} real Gores map segments:
+
+{cluster_info}
+
+Your job: given a difficulty level and segment count, design an interesting
+challenge sequence that creates a good gameplay flow. Consider:
+- Start easier, build difficulty gradually
+- Alternate between open and tight sections for variety
+- Use freeze-heavy sections for challenge, open sections for relief
+- Match the overall difficulty to the player's request
+
+Respond with ONLY valid JSON (no markdown, no explanation):
+{{
+  "challenge_sequence": ["type1", "type2", ...],
+  "difficulty_progression": ["easy", "medium", ...],
+  "visual_theme": "grass"
+}}
+
+Each challenge type MUST be one of the exact labels listed above.
+The difficulty_progression must have the same length as challenge_sequence.
+visual_theme must be one of: "grass", "desert", "winter", "jungle"."""
+
+    user_prompt = (
+        f"Design a {state['user_n_segments']}-segment Gores map "
+        f"with overall difficulty: {state['user_difficulty']}."
+    )
+    if state.get("user_theme"):
+        user_prompt += f" Visual theme: {state['user_theme']}."
+
+    print("  Calling LLM for challenge planning...")
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=0.7,
+        max_tokens=500,
+    )
+
+    raw = response.choices[0].message.content.strip()
+    # Strip markdown code fences if present
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+
+    plan = json.loads(raw)
+
+    # Validate cluster labels
+    valid_labels = set(cluster_labels)
+    sequence = plan["challenge_sequence"]
+    for i, label in enumerate(sequence):
+        if label not in valid_labels:
+            # Find closest match
+            closest = min(valid_labels, key=lambda l: _edit_distance(l.lower(), label.lower()))
+            print(f"  WARNING: Unknown type '{label}', using '{closest}'")
+            sequence[i] = closest
+
+    # Ensure lengths match
+    difficulties = plan.get("difficulty_progression", [state["user_difficulty"]] * len(sequence))
+    while len(difficulties) < len(sequence):
+        difficulties.append(state["user_difficulty"])
+    difficulties = difficulties[:len(sequence)]
+
+    theme = plan.get("visual_theme", state.get("user_theme") or "grass")
+
+    print(f"  LLM plan: {len(sequence)} segments, theme={theme}")
+    for i, (s, d) in enumerate(zip(sequence, difficulties)):
+        print(f"    {i+1}. [{d}] {s}")
+
+    return {
+        "challenge_sequence": sequence,
+        "difficulty_progression": difficulties,
+        "visual_theme": theme,
+    }
+
+
+def _edit_distance(a: str, b: str) -> int:
+    """Simple Levenshtein distance for fuzzy label matching."""
+    if len(a) < len(b):
+        return _edit_distance(b, a)
+    if len(b) == 0:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a):
+        curr = [i + 1]
+        for j, cb in enumerate(b):
+            cost = 0 if ca == cb else 1
+            curr.append(min(curr[j] + 1, prev[j + 1] + 1, prev[j] + cost))
+        prev = curr
+    return prev[len(b)]
+
+
+def init_segments_node(state: PipelineState) -> dict:
+    """Convert challenge sequence into segment records with walker configs."""
     sequence = state["challenge_sequence"]
     difficulties = state["difficulty_progression"]
 
@@ -97,7 +230,7 @@ def plan_node(state: PipelineState) -> dict:
             },
             "width": w,
             "height": h,
-            "seed": (i + 1) * 42,  # deterministic initial seeds
+            "seed": (i + 1) * 42,
             "entry_x": w // 2,
             "exit_x": w // 2,
             "grid": None,
@@ -340,7 +473,8 @@ def build_graph() -> StateGraph:
     graph = StateGraph(PipelineState)
 
     # Add nodes
-    graph.add_node("plan", plan_node)
+    graph.add_node("llm_plan", llm_plan_node)
+    graph.add_node("init_segments", init_segments_node)
     graph.add_node("walker", walker_node)
     graph.add_node("postprocess", postprocess_node)
     graph.add_node("validate", validate_node)
@@ -352,7 +486,8 @@ def build_graph() -> StateGraph:
     graph.add_node("export", export_node)
 
     # Linear edges
-    graph.add_edge("plan", "walker")
+    graph.add_edge("llm_plan", "init_segments")
+    graph.add_edge("init_segments", "walker")
     graph.add_edge("walker", "postprocess")
     graph.add_edge("postprocess", "validate")
 
@@ -390,7 +525,7 @@ def build_graph() -> StateGraph:
     graph.add_edge("export", END)
 
     # Entry point
-    graph.set_entry_point("plan")
+    graph.set_entry_point("llm_plan")
 
     return graph
 
@@ -419,37 +554,25 @@ def run_pipeline(
     Returns:
         Final pipeline state dict.
     """
-    # Default challenge sequence if none provided
-    if challenge_sequence is None:
-        default_types = [
-            "Winding freeze corridor ascent",
-            "high air zigzag traverse",
-            "tight solid corridor traversal",
-            "Winding freeze corridor descent",
-            "open air freeze zigzag descent",
-        ]
-        challenge_sequence = [
-            default_types[i % len(default_types)]
-            for i in range(n_segments)
-        ]
-
-    # Build difficulty progression
-    if difficulty == "easy":
-        progression = ["easy"] * n_segments
-    elif difficulty == "hard":
-        progression = ["medium"] * (n_segments // 2) + ["hard"] * (n_segments - n_segments // 2)
-    else:
-        # Medium: start easy, end medium
-        progression = ["easy"] * (n_segments // 3 + 1) + ["medium"] * (n_segments - n_segments // 3 - 1)
-    progression = progression[:n_segments]
+    # If challenge_sequence is provided, also build difficulty progression.
+    # If None, the LLM plan node will generate both.
+    progression = []
+    if challenge_sequence is not None:
+        if difficulty == "easy":
+            progression = ["easy"] * n_segments
+        elif difficulty == "hard":
+            progression = ["medium"] * (n_segments // 2) + ["hard"] * (n_segments - n_segments // 2)
+        else:
+            progression = ["easy"] * (n_segments // 3 + 1) + ["medium"] * (n_segments - n_segments // 3 - 1)
+        progression = progression[:n_segments]
 
     initial_state: PipelineState = {
         "user_difficulty": difficulty,
         "user_n_segments": n_segments,
         "user_theme": theme,
-        "challenge_sequence": challenge_sequence,
+        "challenge_sequence": challenge_sequence or [],
         "difficulty_progression": progression,
-        "visual_theme": theme,
+        "visual_theme": theme or "grass",
         "segments": [],
         "current_segment_index": 0,
         "output_path": output_path,
@@ -457,8 +580,10 @@ def run_pipeline(
         "max_param_retries": 2,
     }
 
-    print(f"Generating {n_segments}-segment {difficulty} map...")
-    print(f"Sequence: {[s[:25] + '...' if len(s) > 25 else s for s in challenge_sequence]}")
+    mode = "LLM-planned" if not challenge_sequence else "hardcoded"
+    print(f"Generating {n_segments}-segment {difficulty} map ({mode})...")
+    if challenge_sequence:
+        print(f"Sequence: {[s[:25] + '...' if len(s) > 25 else s for s in challenge_sequence]}")
     t0 = time.time()
 
     graph = build_graph()
