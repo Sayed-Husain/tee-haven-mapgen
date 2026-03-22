@@ -23,6 +23,7 @@ import numpy as np
 from langgraph.graph import StateGraph, END
 
 from .assemble import stitch_segments, write_map, SPAWN_ID, FINISH_ID
+from .automap import get_theme_background
 from .automap import apply_theme
 from .builder import _carve_opening
 from .cluster import load_pattern_library
@@ -477,11 +478,16 @@ def export_node(state: PipelineState) -> dict:
 
     visual_layers = state.get("visual_layers", [])
 
+    # Get theme-matched background gradient
+    theme = state.get("visual_theme", "grass")
+    background = get_theme_background(theme)
+
     path = write_map(
         state["assembled_grid"],
         state["entities"],
         output_path,
         visual_layers=visual_layers,
+        background=background,
     )
     return {"output_path": str(path)}
 

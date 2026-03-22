@@ -135,6 +135,7 @@ def write_map(
     entities: list[tuple[int, int, int]],
     output_path: str,
     visual_layers: Optional[list] = None,
+    background: Optional[dict] = None,
 ) -> Path:
     """Write a numpy grid + entities to a DDNet .map file via twmap.
 
@@ -143,6 +144,8 @@ def write_map(
         entities: list of (x, y, tile_id) for spawn/start/finish
         output_path: where to save the .map file
         visual_layers: list of VisualLayer objects (from automap.py)
+        background: dict with 'top_color' and 'bottom_color' as (R,G,B,A)
+                    tuples for a vertical gradient background
 
     Returns:
         Path to saved .map file.
@@ -152,6 +155,10 @@ def write_map(
     out.parent.mkdir(parents=True, exist_ok=True)
 
     m = twmap.Map.empty("DDNet06")
+
+    # Add background gradient quad (renders behind everything)
+    if background:
+        _add_background(m, w, h, background)
 
     # Create physics group with game layer
     physics_group = m.groups.new_physics()
@@ -217,6 +224,38 @@ def _add_visual_layer(
                 tiles[y, x, 1] = 0
 
     tile_layer.tiles = tiles
+
+
+def _add_background(
+    m: twmap.Map,
+    map_w: int,
+    map_h: int,
+    bg: dict,
+) -> None:
+    """Add a background gradient quad behind the map.
+
+    Creates a group with a single colorless quad layer. The quad covers
+    the entire map area with a vertical gradient (top_color → bottom_color).
+    """
+    top = tuple(bg.get("top_color", (80, 120, 180, 255)))
+    bottom = tuple(bg.get("bottom_color", (20, 30, 50, 255)))
+
+    bg_group = m.groups.new()
+    bg_layer = bg_group.layers.new_quads()
+
+    # Quad covers map area with generous margin
+    cx = map_w // 2
+    cy = map_h // 2
+    qw = map_w + 40   # extra margin on sides
+    qh = map_h + 40   # extra margin top/bottom
+
+    q = bg_layer.quads.new(cx, cy, qw, qh)
+    q.colors = [
+        top,       # top-left
+        top,       # top-right
+        bottom,    # bottom-left
+        bottom,    # bottom-right
+    ]
 
 
 # ── Convenience wrapper ──────────────────────────────────────────

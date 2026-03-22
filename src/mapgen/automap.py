@@ -87,6 +87,22 @@ THEME_LAYERS = {
     ],
 }
 
+# Background gradient per theme: top_color → bottom_color (vertical gradient)
+THEME_BACKGROUNDS = {
+    "grass":         {"top_color": (100, 150, 220, 255), "bottom_color": (40, 70, 30, 255)},
+    "desert":        {"top_color": (200, 150, 80, 255),  "bottom_color": (80, 40, 20, 255)},
+    "winter":        {"top_color": (160, 180, 200, 255), "bottom_color": (60, 70, 90, 255)},
+    "jungle":        {"top_color": (60, 120, 60, 255),   "bottom_color": (20, 40, 15, 255)},
+    "round":         {"top_color": (50, 45, 35, 255),    "bottom_color": (20, 18, 12, 255)},
+    "walls":         {"top_color": (60, 55, 45, 255),    "bottom_color": (25, 22, 18, 255)},
+    "gores_classic": {"top_color": (15, 15, 20, 255),    "bottom_color": (5, 5, 8, 255)},
+}
+
+
+def get_theme_background(theme: str) -> Optional[dict]:
+    """Get background gradient config for a theme."""
+    return THEME_BACKGROUNDS.get(theme)
+
 
 # ── Rule data structures ─────────────────────────────────────────
 
