@@ -6,6 +6,9 @@ exist only in memory).
 
 Simpler than pathfind.trace_path() because generated segments don't
 use teleporters.
+
+All BFS logic lives in bfs.py — this module is purely the "validation
+question" layer: given a grid and openings, is it playable?
 """
 
 from __future__ import annotations
@@ -15,8 +18,20 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from mapgen.pathfind import _is_passable
+from mapgen.bfs import (
+    opening_tiles,
+    bfs_flood,
+    bfs_flood_with_steps,
+    PASSABLE,
+    DIRS_4,
+)
 from mapgen.schema import Opening
+
+
+# Re-export opening_tiles for backward compatibility.
+# Several modules import _opening_tiles from validate — this alias
+# lets them keep working until they're updated to import from bfs.
+_opening_tiles = opening_tiles
 
 
 @dataclass
@@ -27,13 +42,8 @@ class ValidationResult:
     path_length: int         # BFS steps from entry to nearest exit tile (-1 if unreachable)
     total_passable: int      # total passable tiles in the grid
     total_reachable: int     # passable tiles reachable from entry
-
-
-# ── 8-directional BFS ───────────────────────────────────────────────
-
-# Same 8 directions as pathfind.py — player can hook/jump diagonally
-_DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1),
-         (-1, -1), (-1, 1), (1, -1), (1, 1)]
+    island_count: int = 0          # disconnected air regions not reachable from entry
+    connected_obstacle_pct: float = 100.0  # % of passable tiles on the main path
 
 
 def validate_segment(
@@ -43,22 +53,27 @@ def validate_segment(
 ) -> ValidationResult:
     """Check if a player can reach the exit from the entry via BFS.
 
+    Also detects "islands" — disconnected passable regions that the
+    player can never reach.  This feedback tells the LLM "your blueprint
+    is playable but 40% of obstacles are unreachable islands — connect
+    them."
+
     Args:
         grid: 2D tile grid (height, width) from build_grid().
         entry: The entry opening specification.
         exit_: The exit opening specification.
 
     Returns:
-        ValidationResult with playability info.
+        ValidationResult with playability info + island metrics.
     """
     h, w = grid.shape
 
     # Collect entry and exit tile positions
-    entry_tiles = _opening_tiles(entry, h, w)
-    exit_tiles = set(_opening_tiles(exit_, h, w))
+    entry_tiles = opening_tiles(entry, h, w)
+    exit_tiles = set(opening_tiles(exit_, h, w))
 
     # Count total passable tiles
-    total_passable = int(np.sum(np.vectorize(_is_passable)(grid)))
+    total_passable = int(np.sum(np.isin(grid, list(PASSABLE))))
 
     if not entry_tiles:
         return ValidationResult(
@@ -66,34 +81,25 @@ def validate_segment(
             total_passable=total_passable, total_reachable=0,
         )
 
-    # BFS from all entry tiles
-    visited: dict[tuple[int, int], int] = {}  # (x, y) -> step
-    queue: deque[tuple[int, int, int]] = deque()  # (x, y, step)
-
-    for (x, y) in entry_tiles:
-        if 0 <= y < h and 0 <= x < w and _is_passable(int(grid[y, x])):
-            visited[(x, y)] = 0
-            queue.append((x, y, 0))
-
-    exit_step = -1
-
-    while queue:
-        x, y, step = queue.popleft()
-
-        # Check if we reached an exit tile
-        if (x, y) in exit_tiles and exit_step == -1:
-            exit_step = step
-
-        # Expand neighbors
-        for dx, dy in _DIRS:
-            nx, ny = x + dx, y + dy
-            if 0 <= ny < h and 0 <= nx < w and (nx, ny) not in visited:
-                if _is_passable(int(grid[ny, nx])):
-                    visited[(nx, ny)] = step + 1
-                    queue.append((nx, ny, step + 1))
+    # Full BFS with step tracking
+    visited, exit_step = bfs_flood_with_steps(
+        grid, entry_tiles, exit_tiles, PASSABLE,
+    )
 
     total_reachable = len(visited)
-    reachable_pct = (total_reachable / total_passable * 100) if total_passable > 0 else 0.0
+    reachable_pct = (
+        (total_reachable / total_passable * 100)
+        if total_passable > 0 else 0.0
+    )
+
+    # ── Island detection ──
+    # Find passable tiles NOT reached by the BFS.  Group them into
+    # connected components ("islands").  Each island is a disconnected
+    # region the player can never visit — wasted game space.
+    reachable_set = set(visited.keys())
+    island_count, connected_pct = _count_islands(
+        grid, h, w, reachable_set, total_passable,
+    )
 
     return ValidationResult(
         playable=exit_step >= 0,
@@ -101,31 +107,60 @@ def validate_segment(
         path_length=exit_step,
         total_passable=total_passable,
         total_reachable=total_reachable,
+        island_count=island_count,
+        connected_obstacle_pct=round(connected_pct, 1),
     )
 
 
-def _opening_tiles(opening: Opening, h: int, w: int) -> list[tuple[int, int]]:
-    """Get the (x, y) tile positions for an opening on the border."""
-    tiles = []
+def _count_islands(
+    grid: np.ndarray,
+    h: int, w: int,
+    reachable: set[tuple[int, int]],
+    total_passable: int,
+) -> tuple[int, float]:
+    """Count disconnected passable regions not reachable from entry.
 
-    if opening.side == "top":
-        for x in range(opening.x, opening.x + opening.width):
-            if 0 <= x < w:
-                tiles.append((x, 0))
+    Uses connected-component analysis: BFS from each unvisited passable
+    tile to find its island, then count islands.
 
-    elif opening.side == "bottom":
-        for x in range(opening.x, opening.x + opening.width):
-            if 0 <= x < w:
-                tiles.append((x, h - 1))
+    Returns:
+        (island_count, connected_obstacle_pct)
+        - island_count: number of disconnected regions
+        - connected_obstacle_pct: % of passable tiles on the main path
+    """
+    if total_passable == 0:
+        return 0, 100.0
 
-    elif opening.side == "left":
-        for y in range(opening.y, opening.y + opening.width):
-            if 0 <= y < h:
-                tiles.append((0, y))
+    # Find all passable tiles not in the reachable set
+    unreachable_passable: set[tuple[int, int]] = set()
+    for y in range(h):
+        for x in range(w):
+            if grid[y, x] in PASSABLE and (x, y) not in reachable:
+                unreachable_passable.add((x, y))
 
-    elif opening.side == "right":
-        for y in range(opening.y, opening.y + opening.width):
-            if 0 <= y < h:
-                tiles.append((w - 1, y))
+    if not unreachable_passable:
+        return 0, 100.0
 
-    return tiles
+    # Connected-component BFS on unreachable tiles
+    visited: set[tuple[int, int]] = set()
+    island_count = 0
+
+    for start in unreachable_passable:
+        if start in visited:
+            continue
+
+        # New island found — BFS to find all tiles in this component
+        island_count += 1
+        queue: deque[tuple[int, int]] = deque([start])
+        visited.add(start)
+
+        while queue:
+            x, y = queue.popleft()
+            for dx, dy in DIRS_4:
+                nx, ny = x + dx, y + dy
+                if (nx, ny) in unreachable_passable and (nx, ny) not in visited:
+                    visited.add((nx, ny))
+                    queue.append((nx, ny))
+
+    connected_pct = (len(reachable) / total_passable * 100) if total_passable > 0 else 100.0
+    return island_count, connected_pct

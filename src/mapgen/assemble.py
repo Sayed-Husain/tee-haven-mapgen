@@ -19,11 +19,12 @@ from pathlib import Path
 import numpy as np
 import twmap
 
+from mapgen.bfs import bfs_flood, bridge_gaps, PASSABLE
 from mapgen.extract import AIR, SOLID, DEATH, FREEZE, NOHOOK, ENTITY
 from mapgen.schema import Blueprint
 
 
-# ── Reverse tile mapping: simplified category → DDNet raw tile ID ───
+# ── Reverse tile mapping: simplified category -> DDNet raw tile ID ──
 
 _TILE_MAP = {
     AIR:    0,    # air
@@ -34,10 +35,10 @@ _TILE_MAP = {
     ENTITY: 0,    # entities are placed separately; default to air
 }
 
-# DDNet entity tile IDs
-_SPAWN_ID = 192   # spawn point
-_START_ID = 22    # start line (timer)
-_FINISH_ID = 21   # finish line
+# DDNet game-layer tile IDs for race entities
+_SPAWN_ID = 192   # spawn point (entity offset + ENTITY_SPAWN)
+_START_ID = 33    # TILE_START -- begins the race timer
+_FINISH_ID = 34   # TILE_FINISH -- finishes the race
 
 
 # ── Border between segments ─────────────────────────────────────────
@@ -63,7 +64,10 @@ def assemble_map(
 
     # ── Step 1: Compute total map dimensions ──
     max_width = max(grid.shape[1] for _, grid in segments)
-    total_height = sum(grid.shape[0] for _, grid in segments) + BORDER_HEIGHT * (len(segments) - 1)
+    total_height = (
+        sum(grid.shape[0] for _, grid in segments)
+        + BORDER_HEIGHT * (len(segments) - 1)
+    )
 
     # Add padding: 2-tile solid border around entire map
     pad = 2
@@ -91,7 +95,7 @@ def assemble_map(
         # Copy segment grid into full map
         full_grid[y_offset:y_offset + seg_h, x_offset:x_offset + seg_w] = grid
 
-        # ── Carve tunnel through border connecting previous exit → this entry ──
+        # ── Carve tunnel through border connecting previous exit -> this entry ──
         if prev_exit_range is not None:
             entry_x0, entry_x1 = _opening_x_range(bp.entry, x_offset)
             # Use the union of both openings so nothing is blocked
@@ -104,22 +108,34 @@ def assemble_map(
         # ── Track this segment's exit for the next border ──
         prev_exit_range = _opening_x_range(bp.exit, x_offset)
 
-        # ── Place entities ──
+        # ── Place entities with safety zones ──
         if i == 0:
             # First segment: spawn + start at entry
             ex, ey = _entry_position(bp, x_offset, y_offset)
+            _enforce_entity_safety(full_grid, ex, ey, label="spawn")
             entities.append((ex, ey, _SPAWN_ID))
             entities.append((ex + 1, ey, _START_ID))
 
         if i == len(segments) - 1:
             # Last segment: finish at exit
             fx, fy = _exit_position(bp, x_offset, y_offset, seg_h)
+            _enforce_entity_safety(full_grid, fx, fy, label="finish")
             entities.append((fx, fy, _FINISH_ID))
             entities.append((fx + 1, fy, _FINISH_ID))
 
         y_offset += seg_h + BORDER_HEIGHT
 
-    # ── Step 4: Write .map via twmap ──
+    # ── Step 4: Full-map playability check ──
+    # Each segment was validated individually, but we need to verify
+    # the STITCHED map is connected end-to-end. Border tunnels or
+    # misaligned exits can leave segments disconnected.
+    if entities:
+        spawn_pos = [(x, y) for x, y, tid in entities if tid == _SPAWN_ID]
+        finish_pos = {(x, y) for x, y, tid in entities if tid == _FINISH_ID}
+        if spawn_pos and finish_pos:
+            _validate_full_map(full_grid, spawn_pos, finish_pos)
+
+    # ── Step 5: Write .map via twmap ──
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
 
@@ -127,6 +143,82 @@ def assemble_map(
 
     print(f"  Map saved: {out}")
     return out
+
+
+# ── Entity safety zones ────────────────────────────────────────────
+
+def _enforce_entity_safety(
+    grid: np.ndarray, x: int, y: int, label: str = "entity",
+) -> None:
+    """Guarantee an entity position is not inside freeze or death tiles.
+
+    In Gores, the player falls from the entry -- they don't need a
+    platform to stand on. We must NOT add solid blocks because that
+    would block the downward path into the segment.
+
+    All we do here is:
+    - Ensure the entity tile itself is AIR (so the entity works)
+    - Convert any freeze/death tiles in a small zone around it to
+      AIR so the player has a few frames to orient before navigating
+
+    Previously this was two near-identical functions (_enforce_spawn_safety
+    and _enforce_finish_safety). Now there's one.
+
+    Modifies grid in-place.
+    """
+    h, w = grid.shape
+    radius = 2  # 2 tiles left/right of entity center
+
+    # Ensure entity + adjacent tile positions are AIR
+    for dx in range(0, 2):  # entity at (x, y), second at (x+1, y)
+        ex = x + dx
+        if 0 <= y < h and 0 <= ex < w:
+            if grid[y, ex] not in (AIR,):
+                grid[y, ex] = AIR
+
+    # Clear freeze/death in a small buffer (5 wide x 3 tall)
+    for dy in range(-1, 2):
+        for dx in range(-radius, radius + 1):
+            ny, nx = y + dy, x + dx
+            if 0 <= ny < h and 0 <= nx < w:
+                if grid[ny, nx] in (FREEZE, DEATH):
+                    grid[ny, nx] = AIR
+
+
+# ── Full-map playability check ─────────────────────────────────────
+
+def _validate_full_map(
+    grid: np.ndarray,
+    spawn_pos: list[tuple[int, int]],
+    finish_pos: set[tuple[int, int]],
+) -> None:
+    """BFS from spawn to finish on the stitched map. Bridge gaps if needed.
+
+    This is the final safety net -- each segment passed validation
+    individually, but the assembled map might have disconnections at
+    segment borders. If BFS fails, we carve 2-tile-wide channels
+    through solid walls to connect the regions.
+
+    Uses bfs.bridge_gaps() -- the shared implementation that was
+    previously duplicated here and in llm.py.
+
+    Modifies grid in-place.
+    """
+    # Quick check first
+    reachable = bfs_flood(grid, spawn_pos, PASSABLE)
+
+    if any(pos in reachable for pos in finish_pos):
+        print("  Full-map check: spawn -> finish CONNECTED")
+        return
+
+    # Not connected -- bridge
+    print("  Full-map check: spawn -> finish DISCONNECTED! Bridging...")
+    connected = bridge_gaps(grid, spawn_pos, finish_pos, PASSABLE)
+
+    if connected:
+        print("  Full-map check: spawn -> finish CONNECTED")
+    else:
+        print("  WARNING: Could not connect spawn -> finish after bridging!")
 
 
 # ── Position helpers ────────────────────────────────────────────────
@@ -178,8 +270,8 @@ def _write_map(
     physics_group = m.groups.new_physics()
     game_layer = physics_group.layers.new_game(width=w, height=h)
 
-    # Convert simplified categories → DDNet tile IDs
-    tiles = game_layer.tiles  # shape: (h, w, 2) → [tile_id, flags]
+    # Convert simplified categories -> DDNet tile IDs
+    tiles = game_layer.tiles  # shape: (h, w, 2) -> [tile_id, flags]
 
     for y in range(h):
         for x in range(w):
@@ -190,6 +282,10 @@ def _write_map(
     # Place entities (overwrite tile IDs at entity positions)
     for ex, ey, tile_id in entities:
         if 0 <= ey < h and 0 <= ex < w:
+            current = tiles[ey, ex, 0]
+            if current not in (0, tile_id):
+                print(f"  WARNING: Entity {tile_id} at ({ex},{ey}) "
+                      f"overwrites tile {current} - forcing to entity")
             tiles[ey, ex, 0] = tile_id
             tiles[ey, ex, 1] = 0
 

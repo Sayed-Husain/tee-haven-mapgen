@@ -17,6 +17,18 @@ maps/output/
 # Secrets
 .env
 
+# Local test scripts (contain machine-specific paths)
+scripts/test-map.ps1
+scripts/maps/output/
+
+# Test blueprints
+maps/blueprints/
+
+# Training
+.venv-train/
+checkpoints/
+data/
+
 # IDE
 .vscode/
 .idea/
