@@ -199,12 +199,12 @@ def _add_visual_layer(
     h: int,
 ) -> None:
     """Add a visual tile layer to the map using the given tileset."""
-    # Load tileset image
-    tileset_img = twmap.Image.from_file(tileset_path)
-    img_idx = m.images.append(tileset_img)
+    # Load tileset image into the map's image collection
+    img = m.images.new_from_file(tileset_path)
+    img_idx = len(m.images) - 1  # index of the just-added image
 
     # Create a design group for visual tiles
-    design_group = m.groups.new_design()
+    design_group = m.groups.new()
     tile_layer = design_group.layers.new_tiles(width=w, height=h)
     tile_layer.image = img_idx
 

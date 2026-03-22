@@ -23,6 +23,7 @@ import numpy as np
 from langgraph.graph import StateGraph, END
 
 from .assemble import stitch_segments, write_map, SPAWN_ID, FINISH_ID
+from .automap import apply_theme
 from .builder import _carve_opening
 from .cluster import load_pattern_library
 from .config_mapping import get_walker_config, get_segment_dimensions, DEFAULT_CONFIG
@@ -55,6 +56,9 @@ class PipelineState(TypedDict, total=False):
     # Assembly + export
     assembled_grid: Any  # np.ndarray
     entities: list[tuple[int, int, int]]
+    visual_grid: Any  # np.ndarray (from automapper)
+    visual_flags: Any  # np.ndarray (from automapper)
+    tileset_path: Optional[str]
     output_path: Optional[str]
 
     # Retry limits
@@ -455,13 +459,39 @@ def assemble_node(state: PipelineState) -> dict:
     return {"assembled_grid": full_grid, "entities": entities}
 
 
+def automap_node(state: PipelineState) -> dict:
+    """Apply visual theme to the assembled game grid."""
+    theme = state.get("visual_theme", "grass")
+    grid = state["assembled_grid"]
+
+    try:
+        visual_indices, visual_flags, tileset_path = apply_theme(grid, theme)
+        print(f"  Automapper: applied '{theme}' theme")
+        return {
+            "visual_grid": visual_indices,
+            "visual_flags": visual_flags,
+            "tileset_path": tileset_path,
+        }
+    except (FileNotFoundError, ValueError) as e:
+        print(f"  Automapper: skipped ({e})")
+        return {}
+
+
 def export_node(state: PipelineState) -> dict:
-    """Write the final .map file."""
+    """Write the final .map file with game + visual layers."""
     output_path = state.get("output_path") or "maps/output/generated.map"
+
+    visual_grid = state.get("visual_grid")
+    visual_flags = state.get("visual_flags")
+    tileset_path = state.get("tileset_path")
+
     path = write_map(
         state["assembled_grid"],
         state["entities"],
         output_path,
+        visual_grid=visual_grid,
+        visual_flags=visual_flags,
+        tileset_path=tileset_path,
     )
     return {"output_path": str(path)}
 
@@ -483,6 +513,7 @@ def build_graph() -> StateGraph:
     graph.add_node("fallback_bridge", fallback_bridge_node)
     graph.add_node("advance_segment", advance_segment_node)
     graph.add_node("assemble", assemble_node)
+    graph.add_node("automap", automap_node)
     graph.add_node("export", export_node)
 
     # Linear edges
@@ -521,7 +552,8 @@ def build_graph() -> StateGraph:
     )
 
     # Post-assembly
-    graph.add_edge("assemble", "export")
+    graph.add_edge("assemble", "automap")
+    graph.add_edge("automap", "export")
     graph.add_edge("export", END)
 
     # Entry point

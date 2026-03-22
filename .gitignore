@@ -27,7 +27,11 @@ maps/blueprints/
 # Training
 .venv-train/
 checkpoints/
-data/
+data/training_data.npz
+
+# Keep automapper assets
+!data/automapper/
+!data/tilesets/
 
 # IDE
 .vscode/
