@@ -42,6 +42,18 @@ THEME_LAYERS = {
         ("grass_main.rules", "grass_main.png", "Default", SOLID),
         ("basic_freeze.rules", "basic_freeze.png", "Freeze soft corners", FREEZE),
     ],
+    "desert": [
+        ("desert_main.rules", "desert_main.png", "Desert", SOLID),
+        ("basic_freeze.rules", "basic_freeze.png", "Freeze soft corners", FREEZE),
+    ],
+    "winter": [
+        ("winter_main.rules", "winter_main.png", "Winter", SOLID),
+        ("basic_freeze.rules", "basic_freeze.png", "Freeze soft corners", FREEZE),
+    ],
+    "jungle": [
+        ("jungle_main.rules", "jungle_main.png", "Jungle", SOLID),
+        ("basic_freeze.rules", "basic_freeze.png", "Freeze soft corners", FREEZE),
+    ],
 }
 
 
