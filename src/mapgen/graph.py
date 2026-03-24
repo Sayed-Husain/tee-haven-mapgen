@@ -14,6 +14,7 @@ Usage:
 
 from __future__ import annotations
 
+import random
 import shutil
 import time
 from pathlib import Path
@@ -22,14 +23,14 @@ from typing import Any, Optional, TypedDict
 import numpy as np
 from langgraph.graph import StateGraph, END
 
-from .assemble import stitch_segments, write_map, SPAWN_ID, FINISH_ID
+from .assemble import stitch_segments, write_map, SPAWN_ID, FINISH_ID, build_spawn_segment, build_finish_segment
 from .automap import get_theme_background
 from .automap import apply_theme
 from .builder import _carve_opening
 from .cluster import load_pattern_library
 from .config_mapping import get_walker_config, get_segment_dimensions, DEFAULT_CONFIG
 from .extract import AIR, SOLID, FREEZE
-from .postprocess import widen_narrow_passages, fix_edge_bugs, remove_freeze_blobs
+from .postprocess import widen_narrow_passages, fix_edge_bugs, remove_freeze_blobs, enforce_freeze_borders
 from .schema import Opening, CheckpointSpec, Blueprint
 from .validate import validate_segment
 from .walker import generate_segment_grid, WalkerConfig
@@ -233,7 +234,7 @@ def init_segments_node(state: PipelineState) -> dict:
             },
             "width": w,
             "height": h,
-            "seed": (i + 1) * 42,
+            "seed": random.randint(1, 999999),
             "entry_x": w // 2,
             "exit_x": w // 2,
             "grid": None,
@@ -294,6 +295,7 @@ def postprocess_node(state: PipelineState) -> dict:
 
     widen_narrow_passages(grid, min_width=4)
     grid = fix_edge_bugs(grid)
+    enforce_freeze_borders(grid)
     grid = remove_freeze_blobs(grid, entry, exit_)
 
     segments = list(state["segments"])
@@ -435,8 +437,17 @@ def check_segments_done(state: PipelineState) -> str:
 
 
 def assemble_node(state: PipelineState) -> dict:
-    """Stitch all segments into a full map."""
-    bp_grid_pairs = []
+    """Stitch all segments into a full map with spawn/finish lobbies."""
+    # Get segment width from first segment
+    first_seg = state["segments"][0]
+    seg_width = first_seg["width"]
+
+    # Build dedicated spawn lobby
+    first_entry_x = first_seg["entry_x"]
+    spawn_bp, spawn_grid = build_spawn_segment(seg_width, first_entry_x)
+
+    # Build challenge segments
+    challenge_pairs = []
     for seg in state["segments"]:
         bp_data = seg["blueprint"]
         entry = Opening(**bp_data["entry"])
@@ -452,9 +463,16 @@ def assemble_node(state: PipelineState) -> dict:
             checkpoint=cp,
             obstacles=[],
         )
-        bp_grid_pairs.append((bp, seg["grid"]))
+        challenge_pairs.append((bp, seg["grid"]))
 
-    full_grid, entities = stitch_segments(bp_grid_pairs)
+    # Build dedicated finish lobby
+    last_seg = state["segments"][-1]
+    last_exit_x = last_seg["exit_x"]
+    finish_bp, finish_grid = build_finish_segment(seg_width, last_exit_x)
+
+    # Assemble: spawn + challenges + finish
+    all_segments = [(spawn_bp, spawn_grid)] + challenge_pairs + [(finish_bp, finish_grid)]
+    full_grid, entities = stitch_segments(all_segments)
     return {"assembled_grid": full_grid, "entities": entities}
 
 

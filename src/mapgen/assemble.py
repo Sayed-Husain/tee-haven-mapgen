@@ -27,7 +27,7 @@ import twmap
 
 from mapgen.bfs import bfs_flood, bridge_gaps, PASSABLE
 from mapgen.extract import AIR, SOLID, DEATH, FREEZE, NOHOOK, ENTITY
-from mapgen.schema import Blueprint
+from mapgen.schema import Blueprint, Opening, CheckpointSpec
 
 
 # ── Reverse tile mapping: simplified category -> DDNet raw tile ID ──
@@ -103,27 +103,43 @@ def stitch_segments(
 
         prev_exit_range = _opening_x_range(bp.exit, x_offset)
 
-        # Place entities — fill the full opening width
+        # Place entities
         if i == 0:
-            ex, ey = _entry_position(bp, x_offset, y_offset)
-            entry_x0 = x_offset + bp.entry.x
-            entry_w = bp.entry.width
-            _enforce_entity_safety(full_grid, ex, ey, label="spawn")
-            # Spawn in center, start tiles across the full opening
-            entities.append((ex, ey, SPAWN_ID))
-            for dx in range(entry_w):
-                tile_x = entry_x0 + dx
-                if tile_x != ex:  # don't overwrite spawn
-                    entities.append((tile_x, ey, START_ID))
+            # Spawn segment: compact spawn area
+            spawn_w = min(seg_w - 6, 20)
+            spawn_x0 = x_offset + (seg_w - spawn_w) // 2
+            spawn_x1 = spawn_x0 + spawn_w
+
+            # Exit corridor dimensions (from blueprint)
+            exit_left = x_offset + bp.exit.x
+            exit_right = exit_left + bp.exit.width
+
+            # Row 1: spawn tiles — only in safe center area
+            # Avoid edges (2 tile margin) and avoid directly above exit hole
+            spawn_y = y_offset + 1
+            safe_x0 = spawn_x0 + 2  # away from side walls
+            safe_x1 = spawn_x1 - 2
+            for sx in range(safe_x0, safe_x1, 2):
+                # Skip tiles directly above exit corridor
+                if exit_left <= sx <= exit_right:
+                    continue
+                entities.append((sx, spawn_y, SPAWN_ID))
+
+            # Start line at the exact point where lobby meets exit corridor
+            # This is where the floor ends and the player drops down
+            start_y = y_offset + seg_h - 5  # right at corridor entrance
+            for sx in range(exit_left, exit_right):
+                entities.append((sx, start_y, START_ID))
 
         if i == len(segments) - 1:
-            fx, fy = _exit_position(bp, x_offset, y_offset, seg_h)
-            exit_x0 = x_offset + bp.exit.x
-            exit_w = bp.exit.width
-            _enforce_entity_safety(full_grid, fx, fy, label="finish")
-            # Finish tiles across the full opening
-            for dx in range(exit_w):
-                entities.append((exit_x0 + dx, fy, FINISH_ID))
+            # Finish segment: finish line on air above solid floor
+            floor_y = y_offset + seg_h - 2
+            finish_y = floor_y - 1  # 1 tile above floor
+            finish_w = min(seg_w - 6, 20)
+            finish_x0 = x_offset + (seg_w - finish_w) // 2
+            finish_x1 = finish_x0 + finish_w
+            for fx in range(finish_x0, finish_x1):
+                entities.append((fx, finish_y, FINISH_ID))
 
         y_offset += seg_h + BORDER_HEIGHT
 
@@ -203,6 +219,11 @@ def write_map(
     # Add start/finish marker quads (rendered on top of everything)
     _add_markers(m, entities)
 
+    # Add direction arrows at segment junctions
+    if visual_layers:
+        # Calculate segment junction y-positions from grid height
+        _add_direction_arrows(m, grid, entities)
+
     m.save(str(out))
     print(f"  Map saved: {out}")
     return out
@@ -258,12 +279,11 @@ def _add_markers(
     marker_group = m.groups.new()
     marker_layer = marker_group.layers.new_quads()
 
-    # Start marker — green overlay exactly matching start tiles
-    if spawn_pos:
-        all_start = spawn_pos + start_pos
-        min_x = min(x for x, y in all_start)
-        max_x = max(x for x, y in all_start) + 1  # +1 for tile width
-        sy = all_start[0][1]
+    # Start marker — green overlay at start line (not spawn)
+    if start_pos:
+        min_x = min(x for x, y in start_pos)
+        max_x = max(x for x, y in start_pos) + 1
+        sy = start_pos[0][1]
         cx = (min_x + max_x) / 2
         tile_w = max_x - min_x
 
@@ -290,6 +310,52 @@ def _add_markers(
             (255, 50, 50, 100),
             (255, 50, 50, 100),
         ]
+
+
+def _add_direction_arrows(
+    m: twmap.Map,
+    grid: np.ndarray,
+    entities: list[tuple[int, int, int]],
+) -> None:
+    """Add downward-pointing arrow quads to guide the player.
+
+    Places semi-transparent arrow markers at regular intervals along
+    the air path. Arrows are small triangular quads pointing downward
+    (since maps flow top-to-bottom).
+    """
+    h, w = grid.shape
+    arrow_group = m.groups.new()
+    arrow_layer = arrow_group.layers.new_quads()
+
+    # Find the center of air passages at regular y intervals
+    spawn_y = min((y for _, y, tid in entities if tid == SPAWN_ID), default=5)
+    finish_y = max((y for _, y, tid in entities if tid == FINISH_ID), default=h - 5)
+
+    # Place arrows every 40 tiles vertically
+    arrow_spacing = 40
+    arrow_count = 0
+
+    for ay in range(spawn_y + 20, finish_y - 10, arrow_spacing):
+        # Find center of air at this y level
+        air_xs = [x for x in range(w) if grid[ay, x] == AIR]
+        if not air_xs:
+            continue
+
+        cx = (min(air_xs) + max(air_xs)) / 2
+
+        # Create a downward arrow using a small quad
+        # Arrow body
+        q = arrow_layer.quads.new(cx, ay, 2, 3)
+        q.colors = [
+            (255, 255, 255, 60),  # top - wider
+            (255, 255, 255, 60),
+            (255, 255, 255, 30),  # bottom - faded
+            (255, 255, 255, 30),
+        ]
+        arrow_count += 1
+
+    if arrow_count > 0:
+        print(f"  Added {arrow_count} direction arrows")
 
 
 def _add_background(
@@ -338,6 +404,134 @@ def assemble_map(
     """
     full_grid, entities = stitch_segments(segments)
     return write_map(full_grid, entities, output_path)
+
+
+# ── Spawn / Finish dedicated segments ────────────────────────────
+
+SPAWN_SEG_HEIGHT = 10  # compact spawn area like real maps
+FINISH_SEG_HEIGHT = 10
+
+
+def build_spawn_segment(width: int, exit_x: int, exit_width: int = 5) -> tuple[Blueprint, np.ndarray]:
+    """Build a compact spawn lobby matching real Gores maps.
+
+    Real Gores spawn pattern (from analyzed maps):
+    - Row 0: solid ceiling
+    - Row 1: spawn dots (entity tiles) on AIR — compact cluster
+    - Row 2: start line (entity tiles) on AIR
+    - Row 3: open air — player drops down
+    - Rows 4+: air transitioning into exit corridor to first segment
+
+    Compact, not a giant room. Players spawn, immediately drop
+    through start line, fall into first challenge segment.
+    """
+    h = SPAWN_SEG_HEIGHT
+    grid = np.full((h, width), SOLID, dtype=np.uint8)
+
+    # Spawn area centered, ~20 tiles wide for 64 players
+    spawn_w = min(width - 6, 20)
+    spawn_x0 = (width - spawn_w) // 2
+    spawn_x1 = spawn_x0 + spawn_w
+
+    # Carve air space from row 1 to bottom
+    for y in range(1, h):
+        for x in range(spawn_x0, spawn_x1):
+            grid[y, x] = AIR
+
+    # Freeze border around spawn area
+    for x in range(spawn_x0, spawn_x1):
+        grid[0, x] = FREEZE  # ceiling
+    for y in range(1, h):
+        if spawn_x0 - 1 >= 0:
+            grid[y, spawn_x0 - 1] = FREEZE
+        if spawn_x1 < width:
+            grid[y, spawn_x1] = FREEZE
+
+    # Widen exit to match first segment's entry
+    exit_w = max(exit_width, 7)
+    exit_x0 = max(1, exit_x - exit_w // 2)
+    exit_x1 = min(width - 1, exit_x0 + exit_w)
+    # Carve exit corridor if it extends beyond spawn area
+    for y in range(h - 4, h):
+        for x in range(exit_x0, exit_x1):
+            if grid[y, x] != AIR:
+                grid[y, x] = AIR
+        # Freeze borders
+        if exit_x0 - 1 >= 0 and grid[y, exit_x0 - 1] == SOLID:
+            grid[y, exit_x0 - 1] = FREEZE
+        if exit_x1 < width and grid[y, exit_x1] == SOLID:
+            grid[y, exit_x1] = FREEZE
+
+    entry = Opening(side="top", x=spawn_x0, y=0, width=spawn_w)
+    exit_ = Opening(side="bottom", x=exit_x0, y=0, width=exit_w)
+    cp = CheckpointSpec(x=width // 2 - 3, y=h // 2, width=6)
+
+    bp = Blueprint(width=width, height=h, difficulty="easy",
+                   entry=entry, exit=exit_, checkpoint=cp, obstacles=[])
+
+    return bp, grid
+
+
+def build_finish_segment(width: int, entry_x: int, entry_width: int = 5) -> tuple[Blueprint, np.ndarray]:
+    """Build a compact finish area matching real Gores maps.
+
+    Real Gores finish pattern:
+    - Entry corridor from last segment at top
+    - Small air room
+    - Finish line (row of finish tiles)
+    - Solid floor below
+    """
+    h = FINISH_SEG_HEIGHT
+    grid = np.full((h, width), SOLID, dtype=np.uint8)
+
+    # Finish area centered, ~20 tiles wide
+    finish_w = min(width - 6, 20)
+    finish_x0 = (width - finish_w) // 2
+    finish_x1 = finish_x0 + finish_w
+
+    # Entry corridor at top
+    entry_w = max(entry_width, 7)
+    entry_x0 = max(1, entry_x - entry_w // 2)
+    entry_x1 = min(width - 1, entry_x0 + entry_w)
+    for y in range(0, 4):
+        for x in range(entry_x0, entry_x1):
+            grid[y, x] = AIR
+        if entry_x0 - 1 >= 0 and grid[y, entry_x0 - 1] == SOLID:
+            grid[y, entry_x0 - 1] = FREEZE
+        if entry_x1 < width and grid[y, entry_x1] == SOLID:
+            grid[y, entry_x1] = FREEZE
+
+    # Air room from row 4 to floor
+    floor_y = h - 2
+    for y in range(4, floor_y):
+        for x in range(finish_x0, finish_x1):
+            grid[y, x] = AIR
+
+    # Solid floor
+    for x in range(finish_x0, finish_x1):
+        grid[floor_y, x] = SOLID
+
+    # Freeze borders
+    for x in range(finish_x0, finish_x1):
+        if grid[3, x] == SOLID:
+            grid[3, x] = FREEZE  # ceiling border
+    for y in range(4, floor_y + 1):
+        if finish_x0 - 1 >= 0:
+            grid[y, finish_x0 - 1] = FREEZE
+        if finish_x1 < width:
+            grid[y, finish_x1] = FREEZE
+    for x in range(finish_x0, finish_x1):
+        if floor_y + 1 < h:
+            grid[floor_y + 1, x] = FREEZE
+
+    entry = Opening(side="top", x=entry_x0, y=0, width=entry_w)
+    exit_ = Opening(side="bottom", x=width // 2 - 2, y=0, width=5)
+    cp = CheckpointSpec(x=width // 2 - 3, y=h // 2, width=6)
+
+    bp = Blueprint(width=width, height=h, difficulty="easy",
+                   entry=entry, exit=exit_, checkpoint=cp, obstacles=[])
+
+    return bp, grid
 
 
 # ── Entity safety zones ──────────────────────────────────────────

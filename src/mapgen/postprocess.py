@@ -362,3 +362,45 @@ def remove_freeze_blobs(
               f"blobs ({tiles_removed} tiles)")
 
     return result
+
+
+# ── Enforce freeze borders ──────────────────────────────────────
+
+def enforce_freeze_borders(grid: np.ndarray) -> np.ndarray:
+    """Ensure SOLID never directly touches AIR — insert FREEZE between them.
+
+    In real Gores maps, the structure is always SOLID -> FREEZE -> AIR.
+    Solid (hookable) tiles should never directly border air. This pass
+    finds every solid tile adjacent to air and converts it to freeze,
+    preserving the correct layering.
+
+    This runs AFTER passage widening (which can carve through freeze
+    borders) and AFTER edge bug fixing.
+
+    Args:
+        grid: 2D tile grid (modified in-place).
+
+    Returns:
+        The modified grid.
+    """
+    h, w = grid.shape
+    to_convert: list[tuple[int, int]] = []
+
+    for y in range(1, h - 1):  # skip map borders
+        for x in range(1, w - 1):
+            if grid[y, x] != SOLID:
+                continue
+            for dx, dy in DIRS_4:
+                nx, ny = x + dx, y + dy
+                if 0 <= ny < h and 0 <= nx < w and grid[ny, nx] == AIR:
+                    to_convert.append((y, x))
+                    break
+
+    for y, x in to_convert:
+        grid[y, x] = FREEZE
+
+    if to_convert:
+        print(f"    Freeze borders: converted {len(to_convert)} solid tiles "
+              f"touching air to freeze")
+
+    return grid
