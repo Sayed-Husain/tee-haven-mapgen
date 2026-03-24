@@ -103,43 +103,48 @@ def stitch_segments(
 
         prev_exit_range = _opening_x_range(bp.exit, x_offset)
 
-        # Place entities
+        # Place entities — scan actual grid for safe AIR positions
         if i == 0:
-            # Spawn segment: compact spawn area
-            spawn_w = min(seg_w - 6, 20)
-            spawn_x0 = x_offset + (seg_w - spawn_w) // 2
-            spawn_x1 = spawn_x0 + spawn_w
-
-            # Exit corridor dimensions (from blueprint)
+            # Spawn: find AIR tiles in upper portion of walker-generated lobby
             exit_left = x_offset + bp.exit.x
             exit_right = exit_left + bp.exit.width
+            spawn_placed = 0
 
-            # Row 1: spawn tiles — only in safe center area
-            # Avoid edges (2 tile margin) and avoid directly above exit hole
-            spawn_y = y_offset + 1
-            safe_x0 = spawn_x0 + 2  # away from side walls
-            safe_x1 = spawn_x1 - 2
-            for sx in range(safe_x0, safe_x1, 2):
-                # Skip tiles directly above exit corridor
-                if exit_left <= sx <= exit_right:
-                    continue
-                entities.append((sx, spawn_y, SPAWN_ID))
+            for sy in range(y_offset + 3, y_offset + 7):
+                for sx in range(x_offset + 4, x_offset + seg_w - 4, 2):
+                    if not (0 <= sy < map_height and 0 <= sx < map_width):
+                        continue
+                    if full_grid[sy, sx] != AIR:
+                        continue
+                    # Skip tiles above exit corridor
+                    if exit_left <= sx <= exit_right:
+                        continue
+                    entities.append((sx, sy, SPAWN_ID))
+                    spawn_placed += 1
+                if spawn_placed >= 8:
+                    break
 
-            # Start line at the exact point where lobby meets exit corridor
-            # This is where the floor ends and the player drops down
-            start_y = y_offset + seg_h - 5  # right at corridor entrance
-            for sx in range(exit_left, exit_right):
-                entities.append((sx, start_y, START_ID))
+            # Start line: find first air row in exit corridor area
+            exit_cx = (exit_left + exit_right) // 2
+            for start_y in range(y_offset + seg_h - 6, y_offset + seg_h - 1):
+                if 0 <= start_y < map_height and full_grid[start_y, exit_cx] == AIR:
+                    for sx in range(exit_left, exit_right):
+                        if 0 <= sx < map_width and full_grid[start_y, sx] == AIR:
+                            entities.append((sx, start_y, START_ID))
+                    break
 
         if i == len(segments) - 1:
-            # Finish segment: finish line on air above solid floor
-            floor_y = y_offset + seg_h - 2
-            finish_y = floor_y - 1  # 1 tile above floor
-            finish_w = min(seg_w - 6, 20)
-            finish_x0 = x_offset + (seg_w - finish_w) // 2
-            finish_x1 = finish_x0 + finish_w
-            for fx in range(finish_x0, finish_x1):
-                entities.append((fx, finish_y, FINISH_ID))
+            # Finish: find wide air row in lower portion of walker-generated lobby
+            for fy in range(y_offset + seg_h - 8, y_offset + seg_h - 3):
+                row_tiles = []
+                for fx in range(x_offset + 4, x_offset + seg_w - 4):
+                    if 0 <= fy < map_height and 0 <= fx < map_width:
+                        if full_grid[fy, fx] == AIR:
+                            row_tiles.append(fx)
+                if len(row_tiles) >= 5:
+                    for fx in row_tiles:
+                        entities.append((fx, fy, FINISH_ID))
+                    break
 
         y_offset += seg_h + BORDER_HEIGHT
 
@@ -408,126 +413,156 @@ def assemble_map(
 
 # ── Spawn / Finish dedicated segments ────────────────────────────
 
-SPAWN_SEG_HEIGHT = 10  # compact spawn area like real maps
-FINISH_SEG_HEIGHT = 10
+SPAWN_SEG_HEIGHT = 25  # room for organic carving
+FINISH_SEG_HEIGHT = 20
 
 
-def build_spawn_segment(width: int, exit_x: int, exit_width: int = 5) -> tuple[Blueprint, np.ndarray]:
-    """Build a compact spawn lobby matching real Gores maps.
+def build_spawn_segment(
+    width: int, exit_x: int, exit_width: int = 5, seed: int | None = None,
+) -> tuple[Blueprint, np.ndarray]:
+    """Build an organic spawn lobby using the walker engine.
 
-    Real Gores spawn pattern (from analyzed maps):
-    - Row 0: solid ceiling
-    - Row 1: spawn dots (entity tiles) on AIR — compact cluster
-    - Row 2: start line (entity tiles) on AIR
-    - Row 3: open air — player drops down
-    - Rows 4+: air transitioning into exit corridor to first segment
+    Instead of a static rectangle, runs the walker with wide-open
+    params to carve a unique, organic-shaped lobby room. Then
+    validates that spawn positions are safe and exit connects.
 
-    Compact, not a giant room. Players spawn, immediately drop
-    through start line, fall into first challenge segment.
+    Args:
+        width: segment width (matches other segments)
+        exit_x: x-position of exit opening center
+        exit_width: width of exit opening
+        seed: random seed for walker (None = random)
     """
-    h = SPAWN_SEG_HEIGHT
-    grid = np.full((h, width), SOLID, dtype=np.uint8)
+    from .walker import generate_segment_grid, WalkerConfig
 
-    # Spawn area centered, ~20 tiles wide for 64 players
+    h = SPAWN_SEG_HEIGHT
+
+    # Walker config for lobby — moderate size, organic shape
+    lobby_config = WalkerConfig(
+        inner_size=6,           # moderate open space
+        outer_margin=2,         # will be converted to solid
+        inner_circularity=0.4,
+        outer_circularity=0.3,
+        momentum_prob=0.4,
+        shift_weights=(0.25, 0.25, 0.25, 0.25),
+        size_mutate_prob=0.05,
+        size_range=(5, 8),
+        circ_mutate_prob=0.02,
+        waypoint_reached_dist=6,
+        fade_steps=0,
+        fade_min_size=5,
+    )
+
+    grid, _ = generate_segment_grid(
+        width=width,
+        height=h,
+        config=lobby_config,
+        n_waypoints=3,
+        seed=seed,
+        entry_x=width // 2,
+        exit_x=exit_x,
+    )
+
+    # LOBBY SAFETY: convert ALL freeze to solid (no danger in spawn area)
+    grid[grid == FREEZE] = SOLID
+
+    # Add solid floor platforms for players to stand on
+    # Find the lowest air row and place a platform below it
+    for y in range(h - 4, 4, -1):
+        air_count = int(np.sum(grid[y, :] == AIR))
+        if air_count > 10:
+            # Place solid platform 2 rows below this air row
+            plat_y = min(y + 2, h - 3)
+            air_xs = [x for x in range(width) if grid[y, x] == AIR]
+            if air_xs:
+                for x in range(min(air_xs), max(air_xs) + 1):
+                    grid[plat_y, x] = SOLID
+            break
+
+    # Carve entry/exit openings
+    from .builder import _carve_opening
     spawn_w = min(width - 6, 20)
     spawn_x0 = (width - spawn_w) // 2
-    spawn_x1 = spawn_x0 + spawn_w
-
-    # Carve air space from row 1 to bottom
-    for y in range(1, h):
-        for x in range(spawn_x0, spawn_x1):
-            grid[y, x] = AIR
-
-    # Freeze border around spawn area
-    for x in range(spawn_x0, spawn_x1):
-        grid[0, x] = FREEZE  # ceiling
-    for y in range(1, h):
-        if spawn_x0 - 1 >= 0:
-            grid[y, spawn_x0 - 1] = FREEZE
-        if spawn_x1 < width:
-            grid[y, spawn_x1] = FREEZE
-
-    # Widen exit to match first segment's entry
-    exit_w = max(exit_width, 7)
-    exit_x0 = max(1, exit_x - exit_w // 2)
-    exit_x1 = min(width - 1, exit_x0 + exit_w)
-    # Carve exit corridor if it extends beyond spawn area
-    for y in range(h - 4, h):
-        for x in range(exit_x0, exit_x1):
-            if grid[y, x] != AIR:
-                grid[y, x] = AIR
-        # Freeze borders
-        if exit_x0 - 1 >= 0 and grid[y, exit_x0 - 1] == SOLID:
-            grid[y, exit_x0 - 1] = FREEZE
-        if exit_x1 < width and grid[y, exit_x1] == SOLID:
-            grid[y, exit_x1] = FREEZE
 
     entry = Opening(side="top", x=spawn_x0, y=0, width=spawn_w)
+    exit_w = max(exit_width, 7)
+    exit_x0 = max(1, exit_x - exit_w // 2)
     exit_ = Opening(side="bottom", x=exit_x0, y=0, width=exit_w)
-    cp = CheckpointSpec(x=width // 2 - 3, y=h // 2, width=6)
 
+    _carve_opening(grid, entry)
+    _carve_opening(grid, exit_)
+
+    cp = CheckpointSpec(x=width // 2 - 3, y=h // 2, width=6)
     bp = Blueprint(width=width, height=h, difficulty="easy",
                    entry=entry, exit=exit_, checkpoint=cp, obstacles=[])
 
     return bp, grid
 
 
-def build_finish_segment(width: int, entry_x: int, entry_width: int = 5) -> tuple[Blueprint, np.ndarray]:
-    """Build a compact finish area matching real Gores maps.
+def build_finish_segment(
+    width: int, entry_x: int, entry_width: int = 5, seed: int | None = None,
+) -> tuple[Blueprint, np.ndarray]:
+    """Build an organic finish area using the walker engine.
 
-    Real Gores finish pattern:
-    - Entry corridor from last segment at top
-    - Small air room
-    - Finish line (row of finish tiles)
-    - Solid floor below
+    Same approach as spawn lobby — walker with wide-open params
+    for a unique, organic-shaped landing room.
     """
+    from .walker import generate_segment_grid, WalkerConfig
+
     h = FINISH_SEG_HEIGHT
-    grid = np.full((h, width), SOLID, dtype=np.uint8)
 
-    # Finish area centered, ~20 tiles wide
-    finish_w = min(width - 6, 20)
-    finish_x0 = (width - finish_w) // 2
-    finish_x1 = finish_x0 + finish_w
+    lobby_config = WalkerConfig(
+        inner_size=6,
+        outer_margin=2,
+        inner_circularity=0.4,
+        outer_circularity=0.3,
+        momentum_prob=0.4,
+        shift_weights=(0.25, 0.25, 0.25, 0.25),
+        size_mutate_prob=0.05,
+        size_range=(5, 8),
+        circ_mutate_prob=0.02,
+        waypoint_reached_dist=6,
+        fade_steps=0,
+        fade_min_size=5,
+    )
 
-    # Entry corridor at top
+    grid, _ = generate_segment_grid(
+        width=width,
+        height=h,
+        config=lobby_config,
+        n_waypoints=3,
+        seed=seed,
+        entry_x=entry_x,
+        exit_x=width // 2,
+    )
+
+    # LOBBY SAFETY: convert ALL freeze to solid (safe landing area)
+    grid[grid == FREEZE] = SOLID
+
+    # Add solid floor platform for landing
+    for y in range(h - 4, 4, -1):
+        air_count = int(np.sum(grid[y, :] == AIR))
+        if air_count > 10:
+            plat_y = min(y + 2, h - 3)
+            air_xs = [x for x in range(width) if grid[y, x] == AIR]
+            if air_xs:
+                for x in range(min(air_xs), max(air_xs) + 1):
+                    grid[plat_y, x] = SOLID
+            break
+
+    # Carve entry/exit openings
+    from .builder import _carve_opening
     entry_w = max(entry_width, 7)
     entry_x0 = max(1, entry_x - entry_w // 2)
-    entry_x1 = min(width - 1, entry_x0 + entry_w)
-    for y in range(0, 4):
-        for x in range(entry_x0, entry_x1):
-            grid[y, x] = AIR
-        if entry_x0 - 1 >= 0 and grid[y, entry_x0 - 1] == SOLID:
-            grid[y, entry_x0 - 1] = FREEZE
-        if entry_x1 < width and grid[y, entry_x1] == SOLID:
-            grid[y, entry_x1] = FREEZE
-
-    # Air room from row 4 to floor
-    floor_y = h - 2
-    for y in range(4, floor_y):
-        for x in range(finish_x0, finish_x1):
-            grid[y, x] = AIR
-
-    # Solid floor
-    for x in range(finish_x0, finish_x1):
-        grid[floor_y, x] = SOLID
-
-    # Freeze borders
-    for x in range(finish_x0, finish_x1):
-        if grid[3, x] == SOLID:
-            grid[3, x] = FREEZE  # ceiling border
-    for y in range(4, floor_y + 1):
-        if finish_x0 - 1 >= 0:
-            grid[y, finish_x0 - 1] = FREEZE
-        if finish_x1 < width:
-            grid[y, finish_x1] = FREEZE
-    for x in range(finish_x0, finish_x1):
-        if floor_y + 1 < h:
-            grid[floor_y + 1, x] = FREEZE
-
     entry = Opening(side="top", x=entry_x0, y=0, width=entry_w)
-    exit_ = Opening(side="bottom", x=width // 2 - 2, y=0, width=5)
-    cp = CheckpointSpec(x=width // 2 - 3, y=h // 2, width=6)
 
+    finish_w = min(width - 6, 20)
+    finish_x0 = (width - finish_w) // 2
+    exit_ = Opening(side="bottom", x=finish_x0, y=0, width=finish_w)
+
+    _carve_opening(grid, entry)
+    _carve_opening(grid, exit_)
+
+    cp = CheckpointSpec(x=width // 2 - 3, y=h // 2, width=6)
     bp = Blueprint(width=width, height=h, difficulty="easy",
                    entry=entry, exit=exit_, checkpoint=cp, obstacles=[])
 

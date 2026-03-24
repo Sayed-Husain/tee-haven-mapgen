@@ -23,7 +23,7 @@ from typing import Any, Optional, TypedDict
 import numpy as np
 from langgraph.graph import StateGraph, END
 
-from .assemble import stitch_segments, write_map, SPAWN_ID, FINISH_ID, build_spawn_segment, build_finish_segment
+from .assemble import stitch_segments, write_map, SPAWN_ID, START_ID, FINISH_ID, build_spawn_segment, build_finish_segment
 from .automap import get_theme_background
 from .automap import apply_theme
 from .builder import _carve_opening
@@ -442,9 +442,15 @@ def assemble_node(state: PipelineState) -> dict:
     first_seg = state["segments"][0]
     seg_width = first_seg["width"]
 
-    # Build dedicated spawn lobby
+    # Build walker-generated spawn lobby
     first_entry_x = first_seg["entry_x"]
-    spawn_bp, spawn_grid = build_spawn_segment(seg_width, first_entry_x)
+    spawn_bp, spawn_grid = build_spawn_segment(
+        seg_width, first_entry_x, seed=random.randint(1, 999999),
+    )
+
+    # Post-process spawn lobby (widen only — no freeze enforcement in safe lobby)
+    from .postprocess import widen_narrow_passages
+    widen_narrow_passages(spawn_grid, min_width=4)
 
     # Build challenge segments
     challenge_pairs = []
@@ -465,15 +471,73 @@ def assemble_node(state: PipelineState) -> dict:
         )
         challenge_pairs.append((bp, seg["grid"]))
 
-    # Build dedicated finish lobby
+    # Build walker-generated finish lobby
     last_seg = state["segments"][-1]
     last_exit_x = last_seg["exit_x"]
-    finish_bp, finish_grid = build_finish_segment(seg_width, last_exit_x)
+    finish_bp, finish_grid = build_finish_segment(
+        seg_width, last_exit_x, seed=random.randint(1, 999999),
+    )
+    widen_narrow_passages(finish_grid, min_width=4)
 
     # Assemble: spawn + challenges + finish
     all_segments = [(spawn_bp, spawn_grid)] + challenge_pairs + [(finish_bp, finish_grid)]
     full_grid, entities = stitch_segments(all_segments)
+
+    # Validate lobby connectivity
+    _validate_lobbies(full_grid, entities)
+
     return {"assembled_grid": full_grid, "entities": entities}
+
+
+def _validate_lobbies(grid: np.ndarray, entities: list[tuple[int, int, int]]) -> None:
+    """Validate spawn and finish lobbies are properly connected."""
+    h, w = grid.shape
+    issues = []
+
+    # Check spawn tiles are on AIR
+    spawn_tiles = [(x, y) for x, y, t in entities if t == SPAWN_ID]
+    for sx, sy in spawn_tiles:
+        if 0 <= sy < h and 0 <= sx < w:
+            tile = grid[sy, sx]
+            if tile != AIR:
+                issues.append(f"Spawn ({sx},{sy}) on tile {tile} (not AIR)")
+                grid[sy, sx] = AIR  # auto-fix
+
+    # Check start tiles are on AIR
+    start_tiles = [(x, y) for x, y, t in entities if t == START_ID]
+    for sx, sy in start_tiles:
+        if 0 <= sy < h and 0 <= sx < w:
+            tile = grid[sy, sx]
+            if tile != AIR:
+                issues.append(f"Start ({sx},{sy}) on tile {tile} (not AIR)")
+                grid[sy, sx] = AIR
+
+    # Check finish tiles are on AIR
+    finish_tiles = [(x, y) for x, y, t in entities if t == FINISH_ID]
+    for fx, fy in finish_tiles:
+        if 0 <= fy < h and 0 <= fx < w:
+            tile = grid[fy, fx]
+            if tile != AIR:
+                issues.append(f"Finish ({fx},{fy}) on tile {tile} (not AIR)")
+                grid[fy, fx] = AIR
+
+    # Check spawn has solid ground within 5 tiles below
+    for sx, sy in spawn_tiles:
+        has_ground = False
+        for dy in range(1, 6):
+            gy = sy + dy
+            if 0 <= gy < h and grid[gy, sx] == SOLID:
+                has_ground = True
+                break
+        if not has_ground:
+            issues.append(f"Spawn ({sx},{sy}) has no solid ground below")
+
+    if issues:
+        print(f"  Lobby validation: {len(issues)} issues found, auto-fixed")
+        for issue in issues[:5]:
+            print(f"    - {issue}")
+    else:
+        print("  Lobby validation: OK")
 
 
 def automap_node(state: PipelineState) -> dict:
