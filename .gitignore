@@ -36,3 +36,10 @@ data/training_data.npz
 # IDE
 .vscode/
 .idea/
+assets/screenshots/desert/
+assets/screenshots/winter/
+assets/screenshots/classic/
+assets/screenshots/jingle/
+assets/screenshots/walls/
+assets/screenshots/*_clean/
+assets/themes/*.map
