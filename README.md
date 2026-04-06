@@ -118,3 +118,33 @@ Requires Python 3.11+.
 ```bash
 python -m venv .venv
 .venv/Scripts/activate  # Windows
+pip install -e .
+```
+
+Set `OPENAI_API_KEY` in a `.env` file at the project root for the LLM planning node.
+
+## Usage
+
+### Generate a map
+
+```bash
+mapgen generate -d medium -n 5 --theme desert
+```
+
+Options:
+- `-d` -- difficulty: `easy`, `medium`, `hard`
+- `-n` -- number of challenge segments (default: 5)
+- `--theme` -- visual theme: grass, desert, winter, jungle, walls, round, gores_classic
+- `-o` -- output path (default: auto-generated timestamp)
+
+Maps auto-copy to the Teeworlds maps folder on Windows.
+
+### Analyze real maps
+
+```bash
+# Segment a map
+mapgen segment maps/samples/Simpler.map
+
+# Extract game layer as ASCII
+mapgen extract maps/samples/Simpler.map
+
