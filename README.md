@@ -148,3 +148,33 @@ mapgen segment maps/samples/Simpler.map
 # Extract game layer as ASCII
 mapgen extract maps/samples/Simpler.map
 
+# Detect horizontal floors
+mapgen floors maps/samples/Simpler.map
+```
+
+## Project Structure
+
+```
+src/mapgen/
+  # Analysis pipeline
+  extract.py        Load .map files, classify tiles, render ASCII
+  pathfind.py       BFS path tracing, checkpoint detection, Voronoi segmentation
+  analyze.py        Per-segment statistics + example library
+  cluster.py        Challenge type clustering from real segments
+  calibration.py    Walker parameter extraction from real data
+
+  # Generation pipeline
+  graph.py          LangGraph state machine orchestration
+  llm.py            GPT-4o planning calls
+  config_mapping.py Cluster label -> WalkerConfig mapping
+  walker.py         Two-kernel path carver
+  postprocess.py    Passage widening, edge bugs, freeze borders
+  validate.py       BFS reachability + lobby safety
+  assemble.py       Segment stitching, lobby carving, arrows, background
+  automap.py        DDNet .rules parser + visual tile generation
+  schema.py         Blueprint / Opening / WalkerConfig dataclasses
+
+  # Shared
+  bfs.py            BFS primitives (flood fill, gap bridging)
+  visualize.py      PNG renderer with segment overlays
+  cli.py            CLI entry point
