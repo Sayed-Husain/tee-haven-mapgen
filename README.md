@@ -178,3 +178,23 @@ src/mapgen/
   bfs.py            BFS primitives (flood fill, gap bridging)
   visualize.py      PNG renderer with segment overlays
   cli.py            CLI entry point
+
+data/
+  automapper/       DDNet .rules files (7 themes)
+  tilesets/         Tileset PNGs (7 themes + arrows)
+```
+
+## Tile Legend
+
+| Char | Tile    | Description                            |
+|------|---------|----------------------------------------|
+| `.`  | Air     | Empty space (playable passage)         |
+| `#`  | Solid   | Walls and platforms (hookable)         |
+| `X`  | Death   | Instant kill                           |
+| `~`  | Freeze  | Freezes player temporarily (barrier)   |
+| `%`  | Nohook  | Solid surface, hook doesn't attach     |
+| `!`  | Entity  | Spawns, teleporters, start/finish      |
+
+## Documentation
+
+- [Architecture](https://github.com/Sayed-Husain/tee-haven-mapgen/wiki/Architecture) -- full pipeline architecture and data flow
