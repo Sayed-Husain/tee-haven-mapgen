@@ -198,3 +198,11 @@ data/
 ## Documentation
 
 - [Architecture](https://github.com/Sayed-Husain/tee-haven-mapgen/wiki/Architecture) -- full pipeline architecture and data flow
+- [Two-Kernel Walker](https://github.com/Sayed-Husain/tee-haven-mapgen/wiki/Two-Kernel-Walker) -- walker algorithm deep dive
+- [Automapper](https://github.com/Sayed-Husain/tee-haven-mapgen/wiki/Automapper) -- DDNet rules parser and theme system
+- [Failed Approaches](https://github.com/Sayed-Husain/tee-haven-mapgen/wiki/Failed-Approaches) -- V1-V4 and VAE: what was tried, why it failed, what was learned
+
+## Credits
+
+- DDNet automapper rules and tilesets from [DDraceNetwork](https://github.com/ddnet/ddnet)
+- `.map` file I/O via [twmap](https://gitlab.com/Patiga/twmap)
