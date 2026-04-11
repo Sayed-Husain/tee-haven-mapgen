@@ -224,10 +224,8 @@ def write_map(
     # Add start/finish marker quads (rendered on top of everything)
     _add_markers(m, entities)
 
-    # Add direction arrows at segment junctions
-    if visual_layers:
-        # Calculate segment junction y-positions from grid height
-        _add_direction_arrows(m, grid, entities)
+    # Add speedup arrows for navigation (always visible)
+    _add_direction_arrows(m, grid, entities, physics_group)
 
     m.save(str(out))
     print(f"  Map saved: {out}")
@@ -317,50 +315,173 @@ def _add_markers(
         ]
 
 
+ARROW_IMAGE = str(Path(__file__).resolve().parent.parent.parent / "data" / "tilesets" / "speed_arrow.png")
+
+
 def _add_direction_arrows(
     m: twmap.Map,
     grid: np.ndarray,
     entities: list[tuple[int, int, int]],
+    physics_group: object,
 ) -> None:
-    """Add downward-pointing arrow quads to guide the player.
+    """Add arrow quads to guide the player through the map.
 
-    Places semi-transparent arrow markers at regular intervals along
-    the air path. Arrows are small triangular quads pointing downward
-    (since maps flow top-to-bottom).
+    Uses quad layer with speed_arrow.png image — always visible
+    regardless of rendering mode. Quads are rotated by adjusting
+    corner positions to point in the actual flow direction.
+
+    No gameplay effect (pure visual, no speedup tiles).
     """
+    import math
+
     h, w = grid.shape
+
+    arrow_path = ARROW_IMAGE
+    if not Path(arrow_path).exists():
+        ddnet_arrow = Path("C:/Users/sh121/Downloads/DDNet-15.3.2-win64/data/editor/speed_arrow.png")
+        if ddnet_arrow.exists():
+            import shutil
+            Path(arrow_path).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(str(ddnet_arrow), arrow_path)
+        else:
+            print("  WARNING: speed_arrow.png not found, skipping arrows")
+            return
+
+    img = m.images.new_from_file(arrow_path)
+    img_idx = len(m.images) - 1
+
     arrow_group = m.groups.new()
     arrow_layer = arrow_group.layers.new_quads()
+    arrow_layer.image = img_idx
 
-    # Find the center of air passages at regular y intervals
     spawn_y = min((y for _, y, tid in entities if tid == SPAWN_ID), default=5)
     finish_y = max((y for _, y, tid in entities if tid == FINISH_ID), default=h - 5)
 
-    # Place arrows every 40 tiles vertically
-    arrow_spacing = 40
+    # Rotation angles: speed_arrow.png points RIGHT by default
+    DIR_ANGLE = {
+        "right": 0,
+        "down": math.pi / 2,
+        "left": math.pi,
+        "up": -math.pi / 2,
+    }
+
+    # Build BFS distance map from finish
+    dist = _build_distance_to_finish(grid, entities)
+
+    arrow_spacing = 20
+    arrow_size = 3  # 3x3 tile quad for visibility
     arrow_count = 0
 
-    for ay in range(spawn_y + 20, finish_y - 10, arrow_spacing):
-        # Find center of air at this y level
+    for ay in range(spawn_y + 10, finish_y - 5, arrow_spacing):
         air_xs = [x for x in range(w) if grid[ay, x] == AIR]
         if not air_xs:
             continue
-
         cx = (min(air_xs) + max(air_xs)) / 2
 
-        # Create a downward arrow using a small quad
-        # Arrow body
-        q = arrow_layer.quads.new(cx, ay, 2, 3)
-        q.colors = [
-            (255, 255, 255, 60),  # top - wider
-            (255, 255, 255, 60),
-            (255, 255, 255, 30),  # bottom - faded
-            (255, 255, 255, 30),
+        direction = _direction_toward_finish(dist, int(cx), ay, h, w)
+        angle = DIR_ANGLE.get(direction, math.pi / 2)
+
+        # Create quad centered at (cx, ay)
+        half = arrow_size / 2
+        # Default corners (unrotated): TL, TR, BL, BR
+        corners_raw = [
+            (-half, -half),  # top-left
+            (half, -half),   # top-right
+            (-half, half),   # bottom-left
+            (half, half),    # bottom-right
         ]
+
+        # Rotate corners
+        cos_a, sin_a = math.cos(angle), math.sin(angle)
+        rotated_corners = []
+        for dx, dy in corners_raw:
+            rx = cx + dx * cos_a - dy * sin_a
+            ry = float(ay) + dx * sin_a + dy * cos_a
+            rotated_corners.append((rx, ry))
+
+        q = arrow_layer.quads.new(cx, float(ay), arrow_size, arrow_size)
+        q.corners = rotated_corners
+        q.colors = [
+            (100, 180, 255, 220),
+            (100, 180, 255, 220),
+            (100, 180, 255, 220),
+            (100, 180, 255, 220),
+        ]
+
         arrow_count += 1
 
     if arrow_count > 0:
         print(f"  Added {arrow_count} direction arrows")
+
+
+def _build_distance_to_finish(
+    grid: np.ndarray,
+    entities: list[tuple[int, int, int]],
+) -> np.ndarray:
+    """BFS from finish tiles to build distance map.
+
+    Returns a 2D array where each air tile has its BFS distance
+    to the nearest finish tile. Non-air tiles get -1.
+    """
+    from collections import deque
+
+    h, w = grid.shape
+    dist = np.full((h, w), -1, dtype=np.int32)
+
+    # Find finish tiles
+    finish_tiles = [(x, y) for x, y, tid in entities if tid == FINISH_ID]
+    if not finish_tiles:
+        return dist
+
+    queue = deque()
+    for fx, fy in finish_tiles:
+        if 0 <= fy < h and 0 <= fx < w:
+            dist[fy, fx] = 0
+            queue.append((fy, fx))
+
+    # BFS through air tiles
+    while queue:
+        cy, cx = queue.popleft()
+        for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            ny, nx = cy + dy, cx + dx
+            if 0 <= ny < h and 0 <= nx < w and dist[ny, nx] == -1:
+                if grid[ny, nx] == AIR or grid[ny, nx] == ENTITY:
+                    dist[ny, nx] = dist[cy, cx] + 1
+                    queue.append((ny, nx))
+
+    return dist
+
+
+def _direction_toward_finish(
+    dist: np.ndarray, cx: int, cy: int, h: int, w: int,
+) -> str:
+    """Find which cardinal direction leads closest to finish.
+
+    Looks at neighbors in the distance map and picks the direction
+    with the smallest distance to finish.
+    """
+    best_dir = "down"
+    best_dist = dist[cy, cx] if dist[cy, cx] >= 0 else 999999
+
+    dirs = [
+        ("down", 0, 1),
+        ("up", 0, -1),
+        ("right", 1, 0),
+        ("left", -1, 0),
+    ]
+
+    # Look a few tiles ahead in each direction for a clearer signal
+    for name, ddx, ddy in dirs:
+        min_d = 999999
+        for step in range(1, 8):
+            nx, ny = cx + ddx * step, cy + ddy * step
+            if 0 <= ny < h and 0 <= nx < w and dist[ny, nx] >= 0:
+                min_d = min(min_d, dist[ny, nx])
+        if min_d < best_dist:
+            best_dist = min_d
+            best_dir = name
+
+    return best_dir
 
 
 def _add_background(
