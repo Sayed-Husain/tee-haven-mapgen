@@ -2,7 +2,7 @@
 
 AI-driven Teeworlds Gores map generator. Combines LLM-based game design, a custom probabilistic two-kernel walker, data-driven challenge calibration from 47,000+ real map segments, and a DDNet automapper engine to produce fully playable `.map` files with themed visuals in under 3 seconds.
 
-![Desert theme](assets/gallery/desert.png)
+![tee-haven-mapgen](assets/social_preview.png)
 
 ## What This Project Does
 
