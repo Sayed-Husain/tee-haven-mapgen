@@ -100,6 +100,8 @@ This addresses a fundamental limitation: the LLM understands game design concept
 
 This project went through 6 major architecture iterations before arriving at the current walker-based approach. Each taught something important:
 
+![Before and After: V1 rectangles vs V5 organic corridors](assets/before_after.png)
+
 | Version | Approach | Result | Lesson |
 |---------|----------|--------|--------|
 | V1 | LLM outputs obstacle coordinates | Unplayable (0% first-attempt pass) | LLMs can't do spatial math |
