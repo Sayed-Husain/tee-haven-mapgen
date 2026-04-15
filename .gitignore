@@ -43,3 +43,4 @@ assets/screenshots/jingle/
 assets/screenshots/walls/
 assets/screenshots/*_clean/
 assets/themes/*.map
+.claude/
